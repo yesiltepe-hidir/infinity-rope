@@ -1,5 +1,98 @@
-__pycache__
-*.egg-info
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-wan_models
-checkpoints
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+latent-forcing/
+
+# Environment variables
+.env
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# Model files and checkpoints
+checkpoints/
+models/
+wan_models/
+logs/
+wandb/
+
+# Data files
+data/
+datasets/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Large prompt files
+prompts/vidprom_filtered_extended.txt
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Hugging Face cache
+.cache/
+huggingface/
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx
+*.sass
+*.cudafe*
+
+# Large files that shouldn't be in git
+*.safetensors
+*.bin
+*.h5
+*.hdf5
