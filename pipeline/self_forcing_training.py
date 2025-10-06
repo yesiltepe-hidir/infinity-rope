@@ -158,12 +158,12 @@ class SelfForcingTrainingPipeline:
                             noisy_image_or_video=noisy_input,
                             conditional_dict=conditional_dict,
                             timestep=timestep,
-                            kv_cache=self.kv_cache1,
+                            kv_cache=self.kv_cache1, # @hidir: same budget for all layers in kv cache... we can change it, 
                             crossattn_cache=self.crossattn_cache,
                             current_start=current_start_frame * self.frame_seq_length
                         )
                         next_timestep = self.denoising_step_list[index + 1]
-                        noisy_input = self.scheduler.add_noise(
+                        noisy_input = self.scheduler.add_noise( # @hidir: adds noise, deviates from ODE trajectory! 
                             denoised_pred.flatten(0, 1),
                             torch.randn_like(denoised_pred.flatten(0, 1)),
                             next_timestep * torch.ones(

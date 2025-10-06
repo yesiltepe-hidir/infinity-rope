@@ -106,7 +106,7 @@ class CausalWanSelfAttention(nn.Module):
         if cache_start is None:
             cache_start = current_start
 
-        # query, key, value function
+        # query, key, value function @hidir: change here with compressed multi-head latent attention
         def qkv_fn(x):
             q = self.norm_q(self.q(x)).view(b, s, n, d)
             k = self.norm_k(self.k(x)).view(b, s, n, d)
@@ -199,7 +199,7 @@ class CausalWanSelfAttention(nn.Module):
                 k, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
 
             current_end = current_start + roped_query.shape[1]
-            sink_tokens = self.sink_size * frame_seqlen
+            sink_tokens = self.sink_size * frame_seqlen # @hidir: sink_size is 0, self-forcing++ used this variable and results were better. 
             # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
             kv_cache_size = kv_cache["k"].shape[1]
             num_new_tokens = roped_query.shape[1]
@@ -220,11 +220,11 @@ class CausalWanSelfAttention(nn.Module):
                 local_start_index = local_end_index - num_new_tokens
                 kv_cache["k"][:, local_start_index:local_end_index] = roped_key
                 kv_cache["v"][:, local_start_index:local_end_index] = v
-            else:
+            else: # -> when kv cache is empty
                 # Assign new keys/values directly up to current_end
                 local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
                 local_start_index = local_end_index - num_new_tokens
-                kv_cache["k"][:, local_start_index:local_end_index] = roped_key
+                kv_cache["k"][:, local_start_index:local_end_index] = roped_key # @hidir: b x s x n x d = 1 x 4680 x 12 x 128, torch.bfloat16
                 kv_cache["v"][:, local_start_index:local_end_index] = v
             x = attention(
                 roped_query,
