@@ -58,9 +58,15 @@ def main():
         prompt_index = index * dist.get_world_size() + dist.get_rank()
         if prompt_index >= len(dataset):
             continue
-        prompt = dataset[prompt_index]
+        prompt_entry = dataset[prompt_index]
+        prompt = prompt_entry["prompts"]
 
-        conditional_dict = encoder(text_prompts=prompt)
+        if isinstance(prompt, str):
+            prompt_inputs = [prompt]
+        else:
+            prompt_inputs = prompt
+
+        conditional_dict = encoder(text_prompts=prompt_inputs)
 
         latents = torch.randn(
             [1, 21, 16, 60, 104], dtype=torch.float32, device=device

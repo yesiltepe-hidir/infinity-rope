@@ -75,12 +75,38 @@ python inference.py \
 Other config files and corresponding checkpoints can be found in [configs](configs) folder and our [huggingface repo](https://huggingface.co/gdhe17/Self-Forcing/tree/main/checkpoints).
 
 ## Training
-### Download text prompts and ODE initialized checkpoint
+
+### Option 1: Use Pre-trained ODE Checkpoint (Recommended for Quick Start)
+
+Download text prompts and ODE initialized checkpoint:
 ```
 huggingface-cli download gdhe17/Self-Forcing checkpoints/ode_init.pt --local-dir .
 huggingface-cli download gdhe17/Self-Forcing vidprom_filtered_extended.txt --local-dir prompts
 ```
-Note: Our training algorithm (except for the GAN version) is data-free (**no video data is needed**). For now, we directly provide the ODE initialization checkpoint and will add more instructions on how to perform ODE initialization in the future (which is identical to the process described in the [CausVid](https://github.com/tianweiy/CausVid) repo).
+Note: Our training algorithm (except for the GAN version) is data-free (**no video data is needed**).
+
+### Option 2: Train ODE Initialization from Scratch (After Architecture Changes)
+
+If you've made changes to the model architecture, run ODE initialization first (following [CausVid](https://github.com/tianweiy/CausVid)):
+
+```bash
+# 1. Generate ODE pairs dataset (one-time, ~1500 pairs)
+torchrun --nproc_per_node 8 scripts/generate_ode_pairs.py \
+    --output_folder data/ode_pairs \
+    --caption_path prompts/vidprom_filtered_extended.txt
+
+python scripts/create_lmdb_iterative.py \
+    --data_path data/ode_pairs \
+    --lmdb_path data/ode_pairs_lmdb
+
+# 2. Update configs/ode_init.yaml: data_path: data/ode_pairs_lmdb
+
+# 3. Run ODE initialization (~1-2 hours on 8 GPUs)
+bash train_ode_init.sh
+
+# 4. Update configs/self_forcing_dmd.yaml with the checkpoint path
+#    generator_ckpt: /storage/latent-forcing/ode_init/checkpoint_model_001000/model.pt
+```
 
 ### Self Forcing Training with DMD
 ```
@@ -92,6 +118,11 @@ torchrun --nnodes=8 --nproc_per_node=8 --rdzv_id=5235 \
   --logdir logs/self_forcing_dmd \
   --disable-wandb
 ```
+Or use the convenience script:
+```bash
+bash train_latent_forcing.sh
+```
+
 Our training run uses 600 iterations and completes in under 2 hours using 64 H100 GPUs. By implementing gradient accumulation, it should be possible to reproduce the results in less than 16 hours using 8 H100 GPUs.
 
 ## Acknowledgements
