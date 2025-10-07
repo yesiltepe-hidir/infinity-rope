@@ -119,7 +119,7 @@ class CausalWanSelfAttention(nn.Module):
             cache_start = current_start
         
         # @hidir: just for debugging, I put this here for avoiding some errors. | [FIXME] delete this later
-        frame_seqlen = math.prod(grid_sizes[0][1:]).item()
+        frame_seqlen = grid_sizes[0][1:].prod().item()
         current_start_frame = current_start // frame_seqlen
         
         #  @hidir: projection for query
@@ -153,16 +153,16 @@ class CausalWanSelfAttention(nn.Module):
             compressed_kv = x @ self.W_kv_downsampled # 1 x 4680 x 1088  | @hidir: only this is cached!
             current_kv_nope, current_k_rope = torch.split(compressed_kv, [self.kv_latent_dim, self.qk_rope_dim], dim=-1) # 1 x 4680 x 1024, 1 x 4680 x 64
             # @hidir: process cached shared key value | [FIXME] check indices | checked, we need to handle if cache is initialized or not.
-            # Check if the selected slice of kv_cache["compressed_kv"] is all zeros
+            # Check if cache has content by checking the cache index (deterministic)
             kv_cache_slice = kv_cache["compressed_kv"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
-            is_all_zeros = torch.all(kv_cache_slice == 0) # no previous cached key value
-            if is_all_zeros:
+            has_cache = (local_start_index > 0) # Deterministic: based on position, not content [FIXME] check if this check is correct.
+            if not has_cache:
                 return current_kv_nope, current_k_rope, compressed_kv # @hidir: return the current key value and compressed key value
             
             cached_kv_nope, cached_k_rope  = torch.split(kv_cache_slice, [self.kv_latent_dim, self.qk_rope_dim], dim=-1)
             # @hidir: normalize
-            current_k_nope = self.norm_kv_latent(current_kv_nope)
-            cached_k_nope = self.norm_kv_latent(cached_kv_nope)
+            current_kv_nope = self.norm_kv_latent(current_kv_nope)
+            cached_kv_nope = self.norm_kv_latent(cached_kv_nope)
             # @hidir: decouple nope and rope parts
             kv_nope = torch.cat([cached_kv_nope, current_kv_nope], dim=1) # concat along sequence dimension
             k_rope  = torch.cat([cached_k_rope, current_k_rope], dim=1) # concat along sequence dimension
