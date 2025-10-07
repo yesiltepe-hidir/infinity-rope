@@ -26,7 +26,7 @@ class ODERegression(BaseModel):
             state_dict = torch.load(args.generator_ckpt, map_location="cpu")[
                 'generator']
             self.generator.load_state_dict(
-                state_dict, strict=True
+                state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
 
         self.num_frame_per_block = getattr(args, "num_frame_per_block", 1)

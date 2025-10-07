@@ -107,7 +107,7 @@ class Trainer:
             state_dict = torch.load(config.generator_ckpt, map_location="cpu")[
                 'generator']
             self.model.generator.load_state_dict(
-                state_dict, strict=True
+                state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
 
         ##############################################################################################################

@@ -34,7 +34,6 @@ latent-forcing/
 .venv
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo

@@ -83,7 +83,7 @@ class SelfForcingTrainingPipeline:
         )
 
         # Step 1: Initialize KV cache to all zeros
-        self._initialize_kv_cache(
+        self._initialize_compressed_kv_cache( # @hidir: initialize compressed kv cache
             batch_size=batch_size, dtype=noise.dtype, device=noise.device
         )
         self._initialize_crossattn_cache(
@@ -246,6 +246,21 @@ class SelfForcingTrainingPipeline:
             kv_cache1.append({
                 "k": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "v": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
+                "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
+            })
+
+        self.kv_cache1 = kv_cache1  # always store the clean cache
+    
+    def _initialize_compressed_kv_cache(self, batch_size, dtype, device):
+        """
+        Initialize a Per-GPU KV cache for the Wan model.
+        """
+        kv_cache1 = []
+
+        for _ in range(self.num_transformer_blocks):
+            kv_cache1.append({
+                "compressed_kv": torch.zeros([batch_size, self.kv_cache_size, 1088], dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
             })

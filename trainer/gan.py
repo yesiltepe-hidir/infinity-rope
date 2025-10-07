@@ -175,7 +175,7 @@ class Trainer:
             elif "model" in state_dict:
                 state_dict = state_dict["model"]
             self.model.generator.load_state_dict(
-                state_dict, strict=True
+                state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
         if hasattr(config, "load"):
             resume_ckpt_path_critic = os.path.join(config.load, "critic")

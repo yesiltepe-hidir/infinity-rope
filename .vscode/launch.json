@@ -1,0 +1,40 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Latent-Forcing Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train.py",
+            "justMyCode": false,
+            "args": [
+                "--config_path", "configs/self_forcing_dmd.yaml",
+                "--logdir", "logs/self_forcing_dmd",
+                "--disable-wandb"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "MASTER_ADDR": "localhost",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "RANK": "0",
+                "LOCAL_RANK": "0",
+                "WORLD_SIZE": "1",
+                "LOCAL_WORLD_SIZE": "1",
+                "MASTER_PORT": "12355"
+            },
+            "python": "/mnt/latent-forcing/bin/python",
+            "preLaunchTask": "activate-venv"
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        }
+    ]
+}
