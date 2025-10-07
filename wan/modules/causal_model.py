@@ -157,7 +157,7 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache_slice = kv_cache["compressed_kv"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
             is_all_zeros = torch.all(kv_cache_slice == 0) # no previous cached key value
             if is_all_zeros:
-                return current_k_nope, current_k_rope, compressed_kv # @hidir: return the current key value and compressed key value
+                return current_kv_nope, current_k_rope, compressed_kv # @hidir: return the current key value and compressed key value
             
             cached_kv_nope, cached_k_rope  = torch.split(kv_cache_slice, [self.kv_latent_dim, self.qk_rope_dim], dim=-1)
             # @hidir: normalize
