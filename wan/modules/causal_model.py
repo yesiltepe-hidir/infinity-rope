@@ -144,8 +144,12 @@ class CausalWanSelfAttention(nn.Module):
         # @hidir: just for debugging, I put this here for avoiding some errors. | [FIXME] delete this later
         num_new_tokens = roped_query.shape[1]
         current_end = current_start + roped_query.shape[1]
-        local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
-        local_start_index = local_end_index - num_new_tokens
+        if kv_cache is None:
+            local_end_index = num_new_tokens
+            local_start_index = 0
+        else:
+            local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
+            local_start_index = local_end_index - num_new_tokens
 
         # @hidir: projection for shared key value
         def kv_projection_fn(x, kv_cache):
@@ -154,6 +158,9 @@ class CausalWanSelfAttention(nn.Module):
             current_kv_nope, current_k_rope = torch.split(compressed_kv, [self.kv_latent_dim, self.qk_rope_dim], dim=-1) # 1 x 4680 x 1024, 1 x 4680 x 64
             # @hidir: process cached shared key value | [FIXME] check indices | checked, we need to handle if cache is initialized or not.
             # Check if cache has content by checking the cache index (deterministic)
+            if kv_cache is None:
+                return current_kv_nope, current_k_rope, compressed_kv # training mode, no cache yet
+
             kv_cache_slice = kv_cache["compressed_kv"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
             has_cache = (local_start_index > 0) # Deterministic: based on position, not content [FIXME] check if this check is correct.
             if not has_cache:
@@ -191,28 +198,32 @@ class CausalWanSelfAttention(nn.Module):
         roped_key = decoupled_rope_k_fn(k_nope, k_rope) # 1 x (4680 x number of past chunks) x 12 x 128
 
         
-        sink_tokens = self.sink_size * frame_seqlen # @hidir: sink_size is 0, self-forcing++ used this variable and results were better. 
-        # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
-        kv_cache_size = kv_cache["compressed_kv"].shape[1]
-        if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
-                num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
-            # Calculate the number of new tokens added in this step
-            # Shift existing cache content left to discard oldest tokens
-            # Clone the source slice to avoid overlapping memory error
-            num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
-            num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
-            kv_cache["compressed_kv"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
-                kv_cache["compressed_kv"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
-            # Insert the new keys/values at the end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - \
-                kv_cache["global_end_index"].item() - num_evicted_tokens
-            local_start_index = local_end_index - num_new_tokens
-            kv_cache["compressed_kv"][:, local_start_index:local_end_index] = compressed_kv
-        else: # -> when kv cache is not full
-            # Assign new keys/values directly up to current_end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
-            local_start_index = local_end_index - num_new_tokens
-            kv_cache["compressed_kv"][:, local_start_index:local_end_index] = compressed_kv # @hidir: b x s x n x d = 1 x 4680 x 12 x 128, torch.bfloat16
+        if kv_cache is not None:
+            sink_tokens = self.sink_size * frame_seqlen # @hidir: sink_size is 0, self-forcing++ used this variable and results were better. 
+            # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
+            kv_cache_size = kv_cache["compressed_kv"].shape[1]
+            if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
+                    num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
+                # Calculate the number of new tokens added in this step
+                # Shift existing cache content left to discard oldest tokens
+                # Clone the source slice to avoid overlapping memory error
+                num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
+                num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
+                kv_cache["compressed_kv"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
+                    kv_cache["compressed_kv"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
+                # Insert the new keys/values at the end
+                local_end_index = kv_cache["local_end_index"].item() + current_end - \
+                    kv_cache["global_end_index"].item() - num_evicted_tokens
+                local_start_index = local_end_index - num_new_tokens
+                kv_cache["compressed_kv"][:, local_start_index:local_end_index] = compressed_kv
+            else: # -> when kv cache is not full
+                # Assign new keys/values directly up to current_end
+                local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
+                local_start_index = local_end_index - num_new_tokens
+                kv_cache["compressed_kv"][:, local_start_index:local_end_index] = compressed_kv # @hidir: b x s x n x d = 1 x 4680 x 12 x 128, torch.bfloat16
+
+            kv_cache["global_end_index"].fill_(current_end)
+            kv_cache["local_end_index"].fill_(local_end_index)
         
         # attention
         x = attention(
@@ -220,8 +231,6 @@ class CausalWanSelfAttention(nn.Module):
             roped_key,
             v
         )
-        kv_cache["global_end_index"].fill_(current_end)
-        kv_cache["local_end_index"].fill_(local_end_index)
 
         # output
         x = x.flatten(2) # @hidir: becomes 1 x 4680 x 1536, just like the original output

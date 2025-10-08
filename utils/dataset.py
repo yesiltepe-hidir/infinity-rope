@@ -58,6 +58,11 @@ class ODERegressionLMDBDataset(Dataset):
 
         if len(latents.shape) == 4:
             latents = latents[None, ...]
+        
+        # Transpose if dimensions are swapped (num_frames, num_denoising_steps, ...) -> (num_denoising_steps, num_frames, ...)
+        # The dataset may have been generated with swapped dimensions
+        if len(latents.shape) == 5:
+            latents = np.transpose(latents, (1, 0, 2, 3, 4))
 
         prompts = retrieve_row_from_lmdb(
             self.env,
@@ -112,6 +117,11 @@ class ShardingLMDBDataset(Dataset):
 
         if len(latents.shape) == 4:
             latents = latents[None, ...]
+        
+        # Transpose if dimensions are swapped (num_frames, num_denoising_steps, ...) -> (num_denoising_steps, num_frames, ...)
+        # The dataset may have been generated with swapped dimensions
+        if len(latents.shape) == 5:
+            latents = np.transpose(latents, (1, 0, 2, 3, 4))
 
         prompts = retrieve_row_from_lmdb(
             self.envs[shard_id],

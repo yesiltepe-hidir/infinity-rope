@@ -3,7 +3,6 @@ from typing import Tuple
 import torch
 
 from model.base import BaseModel
-from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 
 
 class ODERegression(BaseModel):
@@ -19,8 +18,6 @@ class ODERegression(BaseModel):
 
         # Step 1: Initialize all models
 
-        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.model.requires_grad_(True)
         if getattr(args, "generator_ckpt", False):
             print(f"Loading pretrained generator from {args.generator_ckpt}")
             state_dict = torch.load(args.generator_ckpt, map_location="cpu")[
@@ -42,16 +39,6 @@ class ODERegression(BaseModel):
 
         # Step 2: Initialize all hyperparameters
         self.timestep_shift = getattr(args, "timestep_shift", 1.0)
-
-    def _initialize_models(self, args):
-        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.model.requires_grad_(True)
-
-        self.text_encoder = WanTextEncoder()
-        self.text_encoder.requires_grad_(False)
-
-        self.vae = WanVAEWrapper()
-        self.vae.requires_grad_(False)
 
     @torch.no_grad()
     def _prepare_generator_input(self, ode_latent: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -84,7 +71,7 @@ class ODERegression(BaseModel):
                 -1, -1, -1, num_channels, height, width).to(self.device)
         ).squeeze(1)
 
-        timestep = self.denoising_step_list[index].to(self.device)
+        timestep = self.denoising_step_list[index.cpu()].to(self.device)
 
         # if self.extra_noise_step > 0:
         #     random_timestep = torch.randint(0, self.extra_noise_step, [

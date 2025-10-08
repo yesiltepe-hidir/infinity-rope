@@ -86,6 +86,9 @@ class Trainer:
             weight_decay=config.weight_decay
         )
 
+        for block in self.model.generator.model.blocks:
+            block.self_attn.kv_cache = None
+
         # Step 3: Initialize the dataloader
         dataset = ODERegressionLMDBDataset(
             config.data_path, max_pair=getattr(config, "max_pair", int(1e8)))
@@ -173,9 +176,13 @@ class Trainer:
         loss_breakdown = defaultdict(list)
         stats = {}
 
-        for index, t in enumerate(timestep):
-            loss_breakdown[str(int(t.item()) // 250 * 250)].append(
-                unnormalized_loss[index].item())
+        # Flatten to process all samples across all GPUs
+        flat_timestep = gathered_timestep.flatten().cpu()
+        flat_loss = gathered_unnormalized_loss.flatten().cpu()
+
+        for t, loss in zip(flat_timestep, flat_loss):
+            timestep_bucket = str(int(t.item()) // 250 * 250)
+            loss_breakdown[timestep_bucket].append(loss.item())
 
         for key_t in loss_breakdown.keys():
             stats["loss_at_time_" + key_t] = sum(loss_breakdown[key_t]) / \
@@ -187,26 +194,26 @@ class Trainer:
             self.max_grad_norm)
         self.generator_optimizer.step()
 
-        # Step 4: Visualization
-        if VISUALIZE and not self.config.no_visualize and not self.config.disable_wandb and self.is_main_process:
-            # Visualize the input, output, and ground truth
-            input = log_dict["input"]
-            output = log_dict["output"]
-            ground_truth = ode_latent[:, -1]
+        # # Step 4: Visualization
+        # if VISUALIZE and not self.config.no_visualize and not self.config.disable_wandb and self.is_main_process:
+        #     # Visualize the input, output, and ground truth
+        #     input = log_dict["input"]
+        #     output = log_dict["output"]
+        #     ground_truth = ode_latent[:, -1]
 
-            input_video = self.model.vae.decode_to_pixel(input)
-            output_video = self.model.vae.decode_to_pixel(output)
-            ground_truth_video = self.model.vae.decode_to_pixel(ground_truth)
-            input_video = 255.0 * (input_video.cpu().numpy() * 0.5 + 0.5)
-            output_video = 255.0 * (output_video.cpu().numpy() * 0.5 + 0.5)
-            ground_truth_video = 255.0 * (ground_truth_video.cpu().numpy() * 0.5 + 0.5)
+        #     input_video = self.model.vae.decode_to_pixel(input)
+        #     output_video = self.model.vae.decode_to_pixel(output)
+        #     ground_truth_video = self.model.vae.decode_to_pixel(ground_truth)
+        #     input_video = 255.0 * (input_video.cpu().numpy() * 0.5 + 0.5)
+        #     output_video = 255.0 * (output_video.cpu().numpy() * 0.5 + 0.5)
+        #     ground_truth_video = 255.0 * (ground_truth_video.cpu().numpy() * 0.5 + 0.5)
 
-            # Visualize the input, output, and ground truth
-            wandb.log({
-                "input": wandb.Video(input_video, caption="Input", fps=16, format="mp4"),
-                "output": wandb.Video(output_video, caption="Output", fps=16, format="mp4"),
-                "ground_truth": wandb.Video(ground_truth_video, caption="Ground Truth", fps=16, format="mp4"),
-            }, step=self.step)
+        #     # Visualize the input, output, and ground truth
+        #     wandb.log({
+        #         "input": wandb.Video(input_video, caption="Input", fps=16, format="mp4"),
+        #         "output": wandb.Video(output_video, caption="Output", fps=16, format="mp4"),
+        #         "ground_truth": wandb.Video(ground_truth_video, caption="Ground Truth", fps=16, format="mp4"),
+        #     }, step=self.step)
 
         # Step 5: Logging
         if self.is_main_process and not self.disable_wandb:
@@ -215,6 +222,13 @@ class Trainer:
                 "generator_grad_norm": generator_grad_norm.item(),
                 **stats
             }
+            
+            wandb_loss_dict["mean_loss"] = flat_loss.mean().item()
+            
+            # Add histogram of timesteps to see distribution
+            if self.step % 10 == 0:
+                wandb_loss_dict["timestep_histogram"] = wandb.Histogram(flat_timestep.cpu().numpy())
+            
             wandb.log(wandb_loss_dict, step=self.step)
 
         if self.step % self.config.gc_interval == 0:
@@ -225,7 +239,7 @@ class Trainer:
     def train(self):
         while True:
             self.train_one_step()
-            if (not self.config.no_save) and self.step % self.config.log_iters == 0:
+            if (self.step > 0) and (not self.config.no_save) and self.step % self.config.log_iters == 0:
                 self.save()
                 torch.cuda.empty_cache()
 
