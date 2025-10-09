@@ -68,7 +68,19 @@ else:
 
 if args.checkpoint_path:
     state_dict = torch.load(args.checkpoint_path, map_location="cpu")
-    pipeline.generator.load_state_dict(state_dict['generator' if not args.use_ema else 'generator_ema'])
+    generator_state_dict = state_dict['generator' if not args.use_ema else 'generator_ema']
+    
+    # Fix FSDP checkpoint loading by removing _fsdp_wrapped_module prefix
+    def rename_param(name):
+        return name.replace("_fsdp_wrapped_module.", "")
+    
+    # Create a new state dict with renamed parameters
+    renamed_state_dict = {}
+    for name, param in generator_state_dict.items():
+        renamed_name = rename_param(name)
+        renamed_state_dict[renamed_name] = param
+    
+    pipeline.generator.load_state_dict(renamed_state_dict)
 
 pipeline = pipeline.to(dtype=torch.bfloat16)
 if low_memory:
