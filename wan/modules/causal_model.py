@@ -63,6 +63,114 @@ class CausalWanSelfAttention(nn.Module):
                  local_attn_size=-1,
                  sink_size=0,
                  qk_norm=True,
+                 eps=1e-6):
+        assert dim % num_heads == 0
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.local_attn_size = local_attn_size
+        self.sink_size = sink_size
+        self.qk_norm = qk_norm
+        self.eps = eps
+        self.max_attention_size = 32760 if local_attn_size == -1 else local_attn_size * 1560
+
+        # layers
+        self.q = nn.Linear(dim, dim)
+        self.k = nn.Linear(dim, dim)
+        self.v = nn.Linear(dim, dim)
+        self.o = nn.Linear(dim, dim)
+        self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+        self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+
+    def forward(
+        self,
+        x,
+        seq_lens,
+        grid_sizes,
+        freqs,
+        block_mask,
+        kv_cache=None,
+        current_start=0,
+        cache_start=None
+    ):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, num_heads, C / num_heads]
+            seq_lens(Tensor): Shape [B]
+            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
+            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            block_mask (BlockMask)
+        """
+        b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+        if cache_start is None:
+            cache_start = current_start
+
+        # query, key, value function
+        def qkv_fn(x):
+            q = self.norm_q(self.q(x)).view(b, s, n, d)
+            k = self.norm_k(self.k(x)).view(b, s, n, d)
+            v = self.v(x).view(b, s, n, d)
+            return q, k, v
+
+        q, k, v = qkv_fn(x)
+        # @hidir: deleted the kv_cache is None case.
+        frame_seqlen = math.prod(grid_sizes[0][1:]).item()
+        current_start_frame = current_start // frame_seqlen
+        roped_query = causal_rope_apply(
+            q, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
+        roped_key = causal_rope_apply(
+            k, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
+
+        current_end = current_start + roped_query.shape[1]
+        sink_tokens = self.sink_size * frame_seqlen
+        # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
+        kv_cache_size = kv_cache["k"].shape[1]
+        num_new_tokens = roped_query.shape[1]
+        if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
+                num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
+            # Calculate the number of new tokens added in this step
+            # Shift existing cache content left to discard oldest tokens
+            # Clone the source slice to avoid overlapping memory error
+            num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
+            num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
+            kv_cache["k"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
+                kv_cache["k"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
+            kv_cache["v"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
+                kv_cache["v"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
+            # Insert the new keys/values at the end
+            local_end_index = kv_cache["local_end_index"].item() + current_end - \
+                kv_cache["global_end_index"].item() - num_evicted_tokens
+            local_start_index = local_end_index - num_new_tokens
+            kv_cache["k"][:, local_start_index:local_end_index] = roped_key
+            kv_cache["v"][:, local_start_index:local_end_index] = v
+        else:
+            # Assign new keys/values directly up to current_end
+            local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
+            local_start_index = local_end_index - num_new_tokens
+            kv_cache["k"][:, local_start_index:local_end_index] = roped_key
+            kv_cache["v"][:, local_start_index:local_end_index] = v
+        x = attention(
+            roped_query,
+            kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index],
+            kv_cache["v"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+        )
+        kv_cache["global_end_index"].fill_(current_end)
+        kv_cache["local_end_index"].fill_(local_end_index)
+
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+class CausalWanSelfAttentionMLA(nn.Module):
+
+    def __init__(self,
+                 dim,
+                 num_heads,
+                 local_attn_size=-1,
+                 sink_size=0,
+                 qk_norm=True,
                  eps=1e-6): #@hidir: compressed multi-head latent attention    
         assert dim % num_heads == 0
         super().__init__()
@@ -237,10 +345,16 @@ class CausalWanSelfAttention(nn.Module):
         x = x @ self.W_o.T # @hidir: becomes 1 x 4680 x 1536
         return x # 1 x 4680 x 1536
 
+# @hidir: for progressive training, we will modify here. 
+WAN_CAUSAL_SELF_ATTENTION_CLASSES = {
+    'self_attn': CausalWanSelfAttention,
+    'self_attn_mla': CausalWanSelfAttentionMLA,
+}
 
 class CausalWanAttentionBlock(nn.Module):
 
     def __init__(self,
+                 self_attn_type,
                  cross_attn_type,
                  dim,
                  ffn_dim,
@@ -261,7 +375,13 @@ class CausalWanAttentionBlock(nn.Module):
 
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
-        self.self_attn = CausalWanSelfAttention(dim, num_heads, local_attn_size, sink_size, qk_norm, eps)
+        # @hidir: for progressive training, we will modify here. 
+        self.self_attn = WAN_CAUSAL_SELF_ATTENTION_CLASSES[self_attn_type](dim, 
+                                                                           num_heads,
+                                                                           local_attn_size,
+                                                                           sink_size, 
+                                                                           qk_norm, 
+                                                                           eps)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -392,6 +512,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  sink_size=0,
                  qk_norm=True,
                  cross_attn_norm=True,
+                 mla_attn_layers=None, # @hidir: for progressive training, we will modify here. 
                  eps=1e-6):
         r"""
         Initialize the diffusion model backbone.
@@ -427,12 +548,20 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 Enable query/key normalization
             cross_attn_norm (`bool`, *optional*, defaults to False):
                 Enable cross-attention normalization
+            mla_attn_layers (`str`, *optional*, defaults to None):
+                Comma-separated string of layer indices to use MLA attention (e.g., '5,6' for layers 5 and 6)
             eps (`float`, *optional*, defaults to 1e-6):
                 Epsilon value for normalization layers
         """
 
         super().__init__()
-
+        # @hidir: for progressive training, we will modify here. 
+        if mla_attn_layers is not None:
+            self.mla_attn_layers = set(map(int, mla_attn_layers.split(',')))
+            causal_attn_layers = ['self_attn_mla' if i in self.mla_attn_layers else 'self_attn' for i in range(num_layers)]
+        else:
+            causal_attn_layers = ['self_attn'] * num_layers
+        
         assert model_type in ['t2v', 'i2v']
         self.model_type = model_type
 
@@ -463,12 +592,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.time_projection = nn.Sequential(
             nn.SiLU(), nn.Linear(dim, dim * 6))
 
-        # blocks
+        # @hidir: for progressive training, we will modify here. 
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
-            CausalWanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
+            CausalWanAttentionBlock(causal_attn_layers[i], cross_attn_type, dim, ffn_dim, num_heads,
                                     local_attn_size, sink_size, qk_norm, cross_attn_norm, eps)
-            for _ in range(num_layers)
+            for i in range(num_layers)
         ])
 
         # head
@@ -476,14 +605,24 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
-        d = (dim // num_heads) // 2 # @hidir: d was 128 in default (1536 / 12). 
-                                    # However, since RoPE operates on half of the dimension in latent attention, we divide by 2.
+        # Teacher freqs
+        d = (dim // num_heads) 
         self.freqs = torch.cat([
             rope_params(1024, d - 4 * (d // 6)),
             rope_params(1024, 2 * (d // 6)),
             rope_params(1024, 2 * (d // 6))
         ],
             dim=1)
+        # Student freqs  # @hidir: d was 128 in default (1536 / 12). 
+                         # However, since RoPE operates on half of the dimension in latent attention, we divide by 2.
+        d = d // 2
+        self.freqs_student = torch.cat([
+            rope_params(1024, d - 4 * (d // 6)),
+            rope_params(1024, 2 * (d // 6)),
+            rope_params(1024, 2 * (d // 6))
+        ],
+            dim=1)
+
 
         if model_type == 'i2v':
             self.img_emb = MLPProj(1280, dim)
@@ -752,6 +891,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
+        
+        if self.freqs_student.device != device:
+            self.freqs_student = self.freqs_student.to(device)
 
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
@@ -814,7 +956,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     {
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
-                        "cache_start": cache_start
+                        "cache_start": cache_start,
+                        "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
                     }
                 )
                 x = torch.utils.checkpoint.checkpoint(
@@ -828,7 +971,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "kv_cache": kv_cache[block_index],
                         "crossattn_cache": crossattn_cache[block_index],
                         "current_start": current_start,
-                        "cache_start": cache_start
+                        "cache_start": cache_start,
+                        "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
                     }
                 )
                 x = block(x, **kwargs)

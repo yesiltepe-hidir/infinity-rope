@@ -27,8 +27,11 @@ class BaseModel(nn.Module):
         self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
         self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
 
-        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.model.requires_grad_(True)
+        # Get model_kwargs from args
+        model_kwargs = getattr(args, "model_kwargs", {})
+        self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=True)
+        # self.generator.model.requires_grad_(True) 
+        self.require_mla_grads_only()
 
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
         self.real_score.model.requires_grad_(False)
@@ -44,6 +47,40 @@ class BaseModel(nn.Module):
 
         self.scheduler = self.generator.get_scheduler()
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)
+
+    def require_mla_grads_only(self):
+        """
+        Set only the MLA attention blocks to be trainable while freezing all other parameters.
+        This function will:
+        1. Freeze all parameters in the generator model
+        2. Unfreeze only the CausalWanSelfAttentionMLA blocks
+        """
+        from wan.modules.causal_model import CausalWanSelfAttentionMLA
+        
+        # First, freeze all parameters
+        for param in self.generator.model.parameters():
+            param.requires_grad = False
+        
+        # Then, unfreeze only the MLA attention blocks
+        mla_blocks_found = 0
+        for i, block in enumerate(self.generator.model.blocks):
+            if hasattr(block, 'self_attn'):
+                # Check if this is a CausalWanSelfAttentionMLA block
+                if isinstance(block.self_attn, CausalWanSelfAttentionMLA):
+                    for param in block.self_attn.parameters():
+                        param.requires_grad = True
+                    mla_blocks_found += 1
+                    print(f"Layer {i}: Unfroze MLA attention block")
+                else:
+                    print(f"Layer {i}: Skipped non-MLA block ({type(block.self_attn).__name__})")
+        
+        # Print summary of trainable parameters
+        total_params = sum(p.numel() for p in self.generator.model.parameters())
+        trainable_params = sum(p.numel() for p in self.generator.model.parameters() if p.requires_grad)
+        print(f"Found {mla_blocks_found} MLA attention blocks")
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
+        print(f"Trainable percentage: {100 * trainable_params / total_params:.2f}%")
 
     def _get_timestep(
             self,
@@ -218,5 +255,6 @@ class SelfForcingModel(BaseModel):
             same_step_across_blocks=self.args.same_step_across_blocks,
             last_step_only=self.args.last_step_only,
             num_max_frames=self.num_training_frames,
-            context_noise=self.args.context_noise
+            context_noise=self.args.context_noise,
+            mla_attn_layers=getattr(self.args, 'mla_attn_layers', None)
         )

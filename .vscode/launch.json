@@ -11,10 +11,8 @@
             "program": "train.py",
             "justMyCode": false,
             "args": [
-                "--config_path",
-                "configs/self_forcing_dmd.yaml",
-                "--logdir",
-                "logs/self_forcing_dmd",
+                "--config_path", "configs/self_forcing_dmd.yaml",
+                "--logdir", "logs/self_forcing_dmd",
                 "--disable-wandb"
             ],
             "console": "integratedTerminal",
@@ -22,14 +20,14 @@
             "env": {
                 "MASTER_ADDR": "localhost",
                 "CUDA_VISIBLE_DEVICES": "0",
-                "CUDA_LAUNCH_BLOCKING": "1",
                 "RANK": "0",
                 "LOCAL_RANK": "0",
                 "WORLD_SIZE": "1",
                 "LOCAL_WORLD_SIZE": "1",
                 "MASTER_PORT": "12355"
             },
-            "python": ".venv/bin/python",
+            "python": "/mnt/latent-forcing/bin/python",
+            "preLaunchTask": "activate-venv"
         },
         {
             "name": "Python Debugger: Current File",
