@@ -7,6 +7,9 @@
 trainer: ode
 distribution_loss: ode
 
+# @hidir: yes, not a bug, load the final self-forcing dmd checkpoint. 
+generator_ckpt: checkpoints/ode_init.pt
+
 # Generator FSDP Configuration
 generator_fsdp_wrap_strategy: size
 text_encoder_fsdp_wrap_strategy: size
@@ -42,7 +45,7 @@ weight_decay: 0.01
 # NOTE: This should point to your ODE pairs dataset
 # Generate using scripts/generate_ode_pairs.py (see CausVid for reference)
 # CausVid generates ~1.5K ODE pairs for training
-data_path: data/ode_pairs_lmdb  # UPDATE THIS PATH to your ODE pairs LMDB
+data_path: /storage/latent-forcing/ode-data/ode_pairs_lmdb  # UPDATE THIS PATH to your ODE pairs LMDB
 batch_size: 1
 # Note: ODE training does not support gradient accumulation
 # total_batch_size must equal batch_size * num_gpus (1 * 8 = 8)
@@ -65,11 +68,15 @@ num_frame_per_block: 3
 load_raw_video: false
 
 # Model kwargs - must match the architecture used in DMD training
+mla_attn_layers: '5,6'
 model_kwargs:
   timestep_shift: 5.0
+  mla_attn_layers: '5,6'
 
 # WandB Configuration
+disable_wandb: false
+wandb_save_dir: /home/hidir/Latent-Forcing/wandb
 wandb_host: https://api.wandb.ai
-wandb_key: WANDB_KEY
+wandb_key: dca596f662041bb0006bcdc7f1cee6a48237fa73
 wandb_entity: autoregressive-distillation
 wandb_project: latent-forcing-ode-init

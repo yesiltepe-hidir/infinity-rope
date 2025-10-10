@@ -19,8 +19,8 @@ MASTER_PORT=${MASTER_PORT:-29500}            # Master node port
 RDZV_ID=${RDZV_ID:-5235}                     # Rendezvous ID for distributed training
 
 # Training Configuration
-CONFIG_PATH=${CONFIG_PATH:-"configs/self_forcing_dmd.yaml"}  # Config file to use
-LOGDIR=${LOGDIR:-"/storage/latent-forcing"}                  # Directory for saving checkpoints and logs
+CONFIG_PATH=${CONFIG_PATH:-"configs/self_forcing_dmd_without_critic.yaml"}  # Config file to use
+LOGDIR=${LOGDIR:-"/storage/latent-forcing-hidir"}                  # Directory for saving checkpoints and logs
 MAX_ITERATIONS=${MAX_ITERATIONS:-19200}                       # Increased iterations for single-node training
 
 # Optional: WandB Configuration (if you want to enable logging)
@@ -28,7 +28,7 @@ WANDB_SAVE_DIR=${WANDB_SAVE_DIR:-""}         # WandB save directory (empty = def
 # DISABLE_WANDB=${DISABLE_WANDB:-"--disable-wandb"}  # Remove this flag to enable WandB logging
 
 # Checkpoint and Data Paths (should already be downloaded)
-CHECKPOINT_PATH="checkpoints/ode_init.pt"
+CHECKPOINT_PATH="checkpoints/self_forcing_dmd.pt"
 DATA_PATH="prompts/vidprom_filtered_extended.txt"
 
 # Model Path

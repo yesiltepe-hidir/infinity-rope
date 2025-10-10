@@ -31,7 +31,7 @@ WANDB_SAVE_DIR=${WANDB_SAVE_DIR:-""}
 DISABLE_WANDB=${DISABLE_WANDB:-""}
 
 # Data Paths
-ODE_PAIRS_PATH=${ODE_PAIRS_PATH:-"data/ode_pairs_lmdb"}
+ODE_PAIRS_PATH=${ODE_PAIRS_PATH:-"/storage/latent-forcing/ode-data/ode_pairs_lmdb"}
 
 # Model Path
 WAN_MODEL_PATH=${WAN_MODEL_PATH:-"wan_models/Wan2.1-T2V-1.3B"}
@@ -110,6 +110,9 @@ export MASTER_PORT=${MASTER_PORT}
 
 # Create output directory
 mkdir -p ${LOGDIR}
+
+# Set wandb directory
+export WANDB_DIR=$PWD/wandb
 
 # Run ODE initialization training
 torchrun \

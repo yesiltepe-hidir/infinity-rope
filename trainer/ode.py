@@ -47,7 +47,7 @@ class Trainer:
             wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
                 name=config.config_name,
-                mode="online",
+                mode="offline",
                 entity=config.wandb_entity,
                 project=config.wandb_project,
                 dir=config.wandb_save_dir
