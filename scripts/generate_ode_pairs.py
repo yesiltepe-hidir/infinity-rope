@@ -29,14 +29,31 @@ def init_model(device):
     return model, encoder, scheduler, unconditional_dict
 
 
+def find_last_generated_index(output_folder):
+    """Find the highest index of existing generated files."""
+    if not os.path.exists(output_folder):
+        return -1
+    
+    max_index = -1
+    for filename in os.listdir(output_folder):
+        if filename.endswith('.pt'):
+            try:
+                index = int(filename.split('.')[0])
+                max_index = max(max_index, index)
+            except ValueError:
+                continue
+    return max_index
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--output_folder", type=str)
     parser.add_argument("--caption_path", type=str)
     parser.add_argument("--guidance_scale", type=float, default=6.0)
-    parser.add_argument("--num_samples", type=int, default=1500)
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing multiple samples simultaneously")
+    parser.add_argument("--num_samples", type=int, default=2000)
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for processing multiple samples simultaneously")
+    parser.add_argument("--resume", action="store_true", help="Resume from last generated checkpoint")
 
     args = parser.parse_args()
 
@@ -54,6 +71,18 @@ def main():
 
     # if global_rank == 0:
     os.makedirs(args.output_folder, exist_ok=True)
+
+    # Handle resume functionality
+    start_index = 0
+    if args.resume:
+        last_generated = find_last_generated_index(args.output_folder)
+        if last_generated >= 0:
+            start_index = last_generated + 1
+            if dist.get_rank() == 0:
+                print(f"Resuming from index {start_index} (last generated: {last_generated})")
+        else:
+            if dist.get_rank() == 0:
+                print("No existing files found, starting from beginning")
 
     # Calculate total batches per process
     samples_per_process = int(math.ceil(args.num_samples / dist.get_world_size()))
@@ -77,6 +106,18 @@ def main():
             prompt_index = (start_idx + i) * dist.get_world_size() + dist.get_rank()
             if prompt_index >= args.num_samples:
                 break
+            
+            # Skip if file already exists and we're resuming
+            if args.resume and prompt_index < start_index:
+                continue
+                
+            # Check if file already exists
+            output_file = os.path.join(args.output_folder, f"{prompt_index:05d}.pt")
+            if os.path.exists(output_file):
+                if dist.get_rank() == 0:
+                    print(f"Skipping existing file: {prompt_index:05d}.pt")
+                continue
+                
             batch_prompt_indices.append(prompt_index)
             
             prompt_entry = dataset[prompt_index]

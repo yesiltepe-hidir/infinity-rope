@@ -189,7 +189,7 @@ class Trainer:
                 len(loss_breakdown[key_t])
 
         self.generator_optimizer.zero_grad()
-        generator_loss.backward()
+        generator_loss.backward() # @hidir: checked, works well for progressive layer training
         generator_grad_norm = self.model.generator.clip_grad_norm_(
             self.max_grad_norm)
         self.generator_optimizer.step()

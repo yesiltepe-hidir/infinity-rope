@@ -29,9 +29,9 @@ class BaseModel(nn.Module):
 
         # Get model_kwargs from args
         model_kwargs = getattr(args, "model_kwargs", {})
-        self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=True)
-        # self.generator.model.requires_grad_(True) 
+        self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=False) # @hidir: We turned it off causal for the stage 1
         self.require_mla_grads_only()
+        # self.generator.model.requires_grad_(True) 
 
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
         self.real_score.model.requires_grad_(False)

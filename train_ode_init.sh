@@ -24,14 +24,14 @@ RDZV_ID=${RDZV_ID:-5235}
 
 # Training Configuration
 CONFIG_PATH=${CONFIG_PATH:-"configs/ode_init.yaml"}
-LOGDIR=${LOGDIR:-"/storage/latent-forcing/ode_init"}
+LOGDIR=${LOGDIR:-"logs/ode_init"}
 
 # WandB Configuration
 WANDB_SAVE_DIR=${WANDB_SAVE_DIR:-""}
 DISABLE_WANDB=${DISABLE_WANDB:-""}
 
 # Data Paths
-ODE_PAIRS_PATH=${ODE_PAIRS_PATH:-"/storage/latent-forcing/ode-data/ode_pairs_lmdb"}
+ODE_PAIRS_PATH=${ODE_PAIRS_PATH:-"data/ode_pairs_lmdb"}
 
 # Model Path
 WAN_MODEL_PATH=${WAN_MODEL_PATH:-"wan_models/Wan2.1-T2V-1.3B"}

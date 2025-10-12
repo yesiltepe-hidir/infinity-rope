@@ -271,7 +271,7 @@ class WanDiffusionWrapper(torch.nn.Module):
                         concat_time_embeddings=concat_time_embeddings
                     )
                     flow_pred = flow_pred.permute(0, 2, 1, 3, 4)
-                else:
+                else: # ode regression enters here
                     flow_pred = self.model(
                         noisy_image_or_video.permute(0, 2, 1, 3, 4),
                         t=input_timestep, context=prompt_embeds,

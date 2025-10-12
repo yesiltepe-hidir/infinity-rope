@@ -1,4 +1,4 @@
-# ODE Initialization Configuration
+\# ODE Initialization Configuration
 # Based on CausVid's ODE pretraining approach (https://github.com/tianweiy/CausVid)
 # This configuration is used for the first stage: ODE regression training
 # to initialize the causal generator before DMD distillation
@@ -45,7 +45,7 @@ weight_decay: 0.01
 # NOTE: This should point to your ODE pairs dataset
 # Generate using scripts/generate_ode_pairs.py (see CausVid for reference)
 # CausVid generates ~1.5K ODE pairs for training
-data_path: /storage/latent-forcing/ode-data/ode_pairs_lmdb  # UPDATE THIS PATH to your ODE pairs LMDB
+data_path: data/ode_pairs_lmdb  # Path to your ODE pairs LMDB
 batch_size: 1
 # Note: ODE training does not support gradient accumulation
 # total_batch_size must equal batch_size * num_gpus (1 * 8 = 8)

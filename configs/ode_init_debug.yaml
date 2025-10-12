@@ -1,0 +1,82 @@
+# ODE Initialization Configuration
+# Based on CausVid's ODE pretraining approach (https://github.com/tianweiy/CausVid)
+# This configuration is used for the first stage: ODE regression training
+# to initialize the causal generator before DMD distillation
+
+# Model and Training Settings
+trainer: ode
+distribution_loss: ode
+
+# @hidir: yes, not a bug, load the final self-forcing dmd checkpoint. 
+generator_ckpt: checkpoints/ode_init.pt
+
+# Generator FSDP Configuration
+generator_fsdp_wrap_strategy: size
+text_encoder_fsdp_wrap_strategy: size
+
+# Model Configuration
+real_name: Wan2.1-T2V-1.3B
+denoising_step_list:
+- 1000
+- 750
+- 500
+- 250
+- 0
+warp_denoising_step: true
+ts_schedule: false
+num_train_timestep: 1000
+timestep_shift: 5.0
+guidance_scale: 3.0
+denoising_loss_type: flow
+
+# Training Configuration
+mixed_precision: true
+seed: 0
+sharding_strategy: hybrid_full
+
+# Optimizer Settings
+# CausVid note: ODE pretraining typically uses a moderate learning rate
+lr: 5.0e-06
+beta1: 0.0
+beta2: 0.999
+weight_decay: 0.01
+
+# Data Configuration
+# NOTE: This should point to your ODE pairs dataset
+# Generate using scripts/generate_ode_pairs.py (see CausVid for reference)
+# CausVid generates ~1.5K ODE pairs for training
+data_path: data/ode_pairs_lmdb  # Path to your ODE pairs LMDB
+batch_size: 1
+# Note: ODE training does not support gradient accumulation
+# total_batch_size must equal batch_size * num_gpus (1 * 8 = 8)
+
+# Logging and Checkpointing
+log_iters: 100  # Save checkpoint every 100 iterations
+negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+
+# Video/Image Shape Configuration
+image_or_video_shape:
+- 1
+- 21
+- 16
+- 60
+- 104
+
+# Model Specific Settings
+gradient_checkpointing: true
+num_frame_per_block: 3
+load_raw_video: false
+
+# Model kwargs - must match the architecture used in DMD training
+mla_attn_layers: '5,6'
+model_kwargs:
+  timestep_shift: 5.0
+  mla_attn_layers: '5,6'
+
+# WandB Configuration
+disable_wandb: false
+wandb_save_dir: /home/hidir/Latent-Forcing/wandb
+wandb_host: https://api.wandb.ai
+wandb_key: dca596f662041bb0006bcdc7f1cee6a48237fa73
+wandb_entity: autoregressive-distillation
+wandb_project: latent-forcing-ode-init

@@ -114,49 +114,125 @@ class CausalWanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
-        # @hidir: deleted the kv_cache is None case.
-        frame_seqlen = math.prod(grid_sizes[0][1:]).item()
-        current_start_frame = current_start // frame_seqlen
-        roped_query = causal_rope_apply(
-            q, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
-        roped_key = causal_rope_apply(
-            k, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
 
-        current_end = current_start + roped_query.shape[1]
-        sink_tokens = self.sink_size * frame_seqlen
-        # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
-        kv_cache_size = kv_cache["k"].shape[1]
-        num_new_tokens = roped_query.shape[1]
-        if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
-                num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
-            # Calculate the number of new tokens added in this step
-            # Shift existing cache content left to discard oldest tokens
-            # Clone the source slice to avoid overlapping memory error
-            num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
-            num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
-            kv_cache["k"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
-                kv_cache["k"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
-            kv_cache["v"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
-                kv_cache["v"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
-            # Insert the new keys/values at the end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - \
-                kv_cache["global_end_index"].item() - num_evicted_tokens
-            local_start_index = local_end_index - num_new_tokens
-            kv_cache["k"][:, local_start_index:local_end_index] = roped_key
-            kv_cache["v"][:, local_start_index:local_end_index] = v
+        if kv_cache is None:
+            # if it is teacher forcing training?
+            is_tf = (s == seq_lens[0].item() * 2)
+            if is_tf:
+                q_chunk = torch.chunk(q, 2, dim=1)
+                k_chunk = torch.chunk(k, 2, dim=1)
+                roped_query = []
+                roped_key = []
+                # rope should be same for clean and noisy parts
+                for ii in range(2):
+                    rq = rope_apply(q_chunk[ii], grid_sizes, freqs).type_as(v)
+                    rk = rope_apply(k_chunk[ii], grid_sizes, freqs).type_as(v)
+                    roped_query.append(rq)
+                    roped_key.append(rk)
+
+                roped_query = torch.cat(roped_query, dim=1)
+                roped_key = torch.cat(roped_key, dim=1)
+
+                padded_length = math.ceil(q.shape[1] / 128) * 128 - q.shape[1]
+                padded_roped_query = torch.cat(
+                    [roped_query,
+                     torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]],
+                                 device=q.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_roped_key = torch.cat(
+                    [roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]],
+                                            device=k.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_v = torch.cat(
+                    [v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]],
+                                    device=v.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                x = flex_attention(
+                    query=padded_roped_query.transpose(2, 1),
+                    key=padded_roped_key.transpose(2, 1),
+                    value=padded_v.transpose(2, 1),
+                    block_mask=block_mask
+                )[:, :, :-padded_length].transpose(2, 1)
+
+            else: # @hidir: ODE Regression enters here
+                roped_query = rope_apply(q, grid_sizes, freqs).type_as(v) # 1 x 32760 x 12 x 128
+                roped_key = rope_apply(k, grid_sizes, freqs).type_as(v)   # 1 x 32760 x 12 x 128
+
+                padded_length = math.ceil(q.shape[1] / 128) * 128 - q.shape[1]
+                padded_roped_query = torch.cat(
+                    [roped_query,
+                     torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]],
+                                 device=q.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_roped_key = torch.cat(
+                    [roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]],
+                                            device=k.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_v = torch.cat(
+                    [v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]],
+                                    device=v.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                x = flex_attention(
+                    query=padded_roped_query.transpose(2, 1),
+                    key=padded_roped_key.transpose(2, 1),
+                    value=padded_v.transpose(2, 1),
+                    block_mask=None # @hidir: We turned it off block mask for the stage 1
+                )[:, :, :-padded_length].transpose(2, 1)
         else:
-            # Assign new keys/values directly up to current_end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
-            local_start_index = local_end_index - num_new_tokens
-            kv_cache["k"][:, local_start_index:local_end_index] = roped_key
-            kv_cache["v"][:, local_start_index:local_end_index] = v
-        x = attention(
-            roped_query,
-            kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index],
-            kv_cache["v"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
-        )
-        kv_cache["global_end_index"].fill_(current_end)
-        kv_cache["local_end_index"].fill_(local_end_index)
+            frame_seqlen = math.prod(grid_sizes[0][1:]).item()
+            current_start_frame = current_start // frame_seqlen
+            roped_query = causal_rope_apply(
+                q, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
+            roped_key = causal_rope_apply(
+                k, grid_sizes, freqs, start_frame=current_start_frame).type_as(v)
+
+            current_end = current_start + roped_query.shape[1]
+            sink_tokens = self.sink_size * frame_seqlen
+            # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
+            kv_cache_size = kv_cache["k"].shape[1]
+            num_new_tokens = roped_query.shape[1]
+            if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
+                    num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
+                # Calculate the number of new tokens added in this step
+                # Shift existing cache content left to discard oldest tokens
+                # Clone the source slice to avoid overlapping memory error
+                num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
+                num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
+                kv_cache["k"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
+                    kv_cache["k"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
+                kv_cache["v"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
+                    kv_cache["v"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
+                # Insert the new keys/values at the end
+                local_end_index = kv_cache["local_end_index"].item() + current_end - \
+                    kv_cache["global_end_index"].item() - num_evicted_tokens
+                local_start_index = local_end_index - num_new_tokens
+                kv_cache["k"][:, local_start_index:local_end_index] = roped_key
+                kv_cache["v"][:, local_start_index:local_end_index] = v
+            else:
+                # Assign new keys/values directly up to current_end
+                local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
+                local_start_index = local_end_index - num_new_tokens
+                kv_cache["k"][:, local_start_index:local_end_index] = roped_key
+                kv_cache["v"][:, local_start_index:local_end_index] = v
+            x = attention(
+                roped_query,
+                kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index],
+                kv_cache["v"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+            )
+            kv_cache["global_end_index"].fill_(current_end)
+            kv_cache["local_end_index"].fill_(local_end_index)
 
         # output
         x = x.flatten(2)
@@ -243,8 +319,8 @@ class CausalWanSelfAttentionMLA(nn.Module):
         # @hidir: decoupled rope for query
         def decoupled_rope_q_fn(q_nope, q_rope):
             # @hidir: decoupled rope for query
-            roped_query = causal_rope_apply( # @hidir: apply rope to q_rope
-                q_rope, grid_sizes, freqs, start_frame=current_start_frame).type_as(q_rope)
+            roped_query = rope_apply( # @hidir: apply rope to q_rope
+                q_rope, grid_sizes, freqs).type_as(q_rope)
             roped_query = torch.cat([q_nope, roped_query], dim=-1) # @hidir: still must be of size 1 x 4680 x 12 x 128
             return roped_query
         roped_query = decoupled_rope_q_fn(q_nope, q_rope)
@@ -264,11 +340,12 @@ class CausalWanSelfAttentionMLA(nn.Module):
             # @hidir: process current shared key value
             compressed_kv = x @ self.W_kv_downsampled # 1 x 4680 x 1088  | @hidir: only this is cached!
             current_kv_nope, current_k_rope = torch.split(compressed_kv, [self.kv_latent_dim, self.qk_rope_dim], dim=-1) # 1 x 4680 x 1024, 1 x 4680 x 64
-            # @hidir: process cached shared key value | [FIXME] check indices | checked, we need to handle if cache is initialized or not.
+            # @hidir: normalize
+            current_kv_nope = self.norm_kv_latent(current_kv_nope)
             # Check if cache has content by checking the cache index (deterministic)
             if kv_cache is None:
                 return current_kv_nope, current_k_rope, compressed_kv # training mode, no cache yet
-
+            # @hidir: process cached shared key value
             kv_cache_slice = kv_cache["compressed_kv"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
             has_cache = (local_start_index > 0) # Deterministic: based on position, not content [FIXME] check if this check is correct.
             if not has_cache:
@@ -276,7 +353,6 @@ class CausalWanSelfAttentionMLA(nn.Module):
             
             cached_kv_nope, cached_k_rope  = torch.split(kv_cache_slice, [self.kv_latent_dim, self.qk_rope_dim], dim=-1)
             # @hidir: normalize
-            current_kv_nope = self.norm_kv_latent(current_kv_nope)
             cached_kv_nope = self.norm_kv_latent(cached_kv_nope)
             # @hidir: decouple nope and rope parts
             kv_nope = torch.cat([cached_kv_nope, current_kv_nope], dim=1) # concat along sequence dimension
@@ -284,7 +360,7 @@ class CausalWanSelfAttentionMLA(nn.Module):
             return kv_nope, k_rope, compressed_kv
         kv_nope, k_rope, compressed_kv = kv_projection_fn(x, kv_cache) # here, k_rope must be of shape b x s_full x qk_rope_dim
                                                         # update: kv_nope: 1 x 9360 x 1024, k_rope: 1 x 9360 x 64
-                                                        # in general: 1 x (4680 x number of past chunks) x dim
+                                                        # in general: 1 x (32760) x dim
 
         # @hidir: get key and value from shared key value
         def get_k_v_from_kv_nope(kv_nope):
@@ -292,21 +368,96 @@ class CausalWanSelfAttentionMLA(nn.Module):
             kv = kv.view(b, -1, n, self.qk_nope_dim + self.head_dim) # split into heads
             k_nope, v = torch.split(kv, [self.qk_nope_dim, self.head_dim], dim=-1)
             return k_nope, v
-        k_nope, v = get_k_v_from_kv_nope(kv_nope) # k_nope: 1 x (4680 x number of past chunks) x 12 x 64, v: 1 x (4680 x number of past chunks) x 12 x 128
+        k_nope, v = get_k_v_from_kv_nope(kv_nope) # k_nope: 1 x (32760) x 12 x 64, v: 1 x (32760) x 12 x 128
 
         # @hidir: decoupled rope for key
         def decoupled_rope_k_fn(k_nope, k_rope):
-            k_rope = k_rope.view(b, -1, 1, self.qk_rope_dim) # 1 x (4680 x number of past chunks) x 1 x 64
-            roped_key = causal_rope_apply(
-                k_rope, grid_sizes, freqs, start_frame=current_start_frame).type_as(k_rope)
+            k_rope = k_rope.view(b, -1, 1, self.qk_rope_dim) # 1 x (32760) x 1 x 64
+            roped_key = rope_apply(
+                k_rope, grid_sizes, freqs).type_as(k_rope)
             # optimization: repeat the rotated k for all heads AFTER the rope is applied.
-            roped_key = roped_key.repeat(1, 1, n, 1) # 1 x (4680 x number of past chunks) x 12 x 64
+            roped_key = roped_key.repeat(1, 1, n, 1) # 1 x (32760) x 12 x 64
             roped_key = torch.cat([k_nope, roped_key], dim=-1) 
             return roped_key
-        roped_key = decoupled_rope_k_fn(k_nope, k_rope) # 1 x (4680 x number of past chunks) x 12 x 128
+        roped_key = decoupled_rope_k_fn(k_nope, k_rope) # 1 x (32760) x 12 x 128
 
-        
-        if kv_cache is not None:
+        if kv_cache is None:
+            # if it is teacher forcing training?
+            is_tf = (s == seq_lens[0].item() * 2)
+            if is_tf:
+                q_chunk = torch.chunk(q, 2, dim=1)
+                k_chunk = torch.chunk(k, 2, dim=1)
+                roped_query = []
+                roped_key = []
+                # rope should be same for clean and noisy parts
+                for ii in range(2):
+                    rq = rope_apply(q_chunk[ii], grid_sizes, freqs).type_as(v)
+                    rk = rope_apply(k_chunk[ii], grid_sizes, freqs).type_as(v)
+                    roped_query.append(rq)
+                    roped_key.append(rk)
+
+                roped_query = torch.cat(roped_query, dim=1)
+                roped_key = torch.cat(roped_key, dim=1)
+
+                padded_length = math.ceil(q.shape[1] / 128) * 128 - q.shape[1]
+                padded_roped_query = torch.cat(
+                    [roped_query,
+                     torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]],
+                                 device=q.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_roped_key = torch.cat(
+                    [roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]],
+                                            device=k.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_v = torch.cat(
+                    [v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]],
+                                    device=v.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                x = flex_attention(
+                    query=padded_roped_query.transpose(2, 1),
+                    key=padded_roped_key.transpose(2, 1),
+                    value=padded_v.transpose(2, 1),
+                    block_mask=block_mask # [FIXME] turn it off later
+                )[:, :, :-padded_length].transpose(2, 1)
+
+            else: # @hidir: ODE Regression enters here
+                # roped_query = rope_apply(q, grid_sizes, freqs).type_as(v) -> already computed
+                # roped_key = rope_apply(k, grid_sizes, freqs).type_as(v)   -> already computed
+
+                padded_length = math.ceil(roped_query.shape[1] / 128) * 128 - roped_query.shape[1]
+                padded_roped_query = torch.cat(
+                    [roped_query,
+                     torch.zeros([roped_query.shape[0], padded_length, roped_query.shape[2], roped_query.shape[3]],
+                                 device=roped_query.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_roped_key = torch.cat(
+                    [roped_key, torch.zeros([roped_key.shape[0], padded_length, roped_key.shape[2], roped_key.shape[3]],
+                                            device=roped_key.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                padded_v = torch.cat(
+                    [v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]],
+                                    device=v.device, dtype=v.dtype)],
+                    dim=1
+                )
+
+                x = flex_attention(
+                    query=padded_roped_query.transpose(2, 1),
+                    key=padded_roped_key.transpose(2, 1),
+                    value=padded_v.transpose(2, 1),
+                    block_mask=None # @hidir: We turned it off block mask for the stage 1
+                )[:, :, :-padded_length].transpose(2, 1)
+                
+        elif kv_cache is not None:
             sink_tokens = self.sink_size * frame_seqlen # @hidir: sink_size is 0, self-forcing++ used this variable and results were better. 
             # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
             kv_cache_size = kv_cache["compressed_kv"].shape[1]
@@ -983,7 +1134,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         x = self.unpatchify(x, grid_sizes)
         return torch.stack(x)
 
-    def _forward_train(
+    def _forward_train( # @hidir: ODE Regression enters here
         self,
         x,
         t,
@@ -1021,6 +1172,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
+        
+        if self.freqs_student.device != device:
+            self.freqs_student = self.freqs_student.to(device)
+        
 
         # Construct blockwise causal attn mask
         if self.block_mask is None:
@@ -1041,7 +1196,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         num_frame_per_block=self.num_frame_per_block,
                         local_attn_size=self.local_attn_size
                     )
-                else:
+                else: # @hidir: ODE Regression enters here
                     self.block_mask = self._prepare_blockwise_causal_attn_mask(
                         device, num_frames=x.shape[2],
                         frame_seqlen=x.shape[-2] * x.shape[-1] // (self.patch_size[1] * self.patch_size[2]),
@@ -1121,8 +1276,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        for block in self.blocks:
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
+        for block_index, block in enumerate(self.blocks):
+            kwargs.update(
+                {
+                    "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
+                }
+            )
+            if torch.is_grad_enabled() and self.gradient_checkpointing: # @hidir: ODE Regression enters here
                 x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     x, **kwargs,

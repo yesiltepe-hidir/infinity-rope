@@ -20,7 +20,7 @@ RDZV_ID=${RDZV_ID:-5235}                     # Rendezvous ID for distributed tra
 
 # Training Configuration
 CONFIG_PATH=${CONFIG_PATH:-"configs/self_forcing_dmd_without_critic.yaml"}  # Config file to use
-LOGDIR=${LOGDIR:-"/storage/latent-forcing-hidir"}                  # Directory for saving checkpoints and logs
+LOGDIR=${LOGDIR:-"logs/latent-forcing"}                  # Directory for saving checkpoints and logs
 MAX_ITERATIONS=${MAX_ITERATIONS:-19200}                       # Increased iterations for single-node training
 
 # Optional: WandB Configuration (if you want to enable logging)
