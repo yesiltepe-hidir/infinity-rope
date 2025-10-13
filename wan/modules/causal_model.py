@@ -94,6 +94,7 @@ class CausalWanSelfAttention(nn.Module):
         current_start=0,
         cache_start=None
     ):
+        kv_cache = None # @hidir: ODE Regression enters here
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -290,6 +291,8 @@ class CausalWanSelfAttentionMLA(nn.Module):
         current_start=0,
         cache_start=None
     ):
+        kv_cache = None # @hidir: ODE Regression enters here
+        # print('MLA Layer')
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]

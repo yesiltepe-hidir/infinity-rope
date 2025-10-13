@@ -29,7 +29,7 @@ class BaseModel(nn.Module):
 
         # Get model_kwargs from args
         model_kwargs = getattr(args, "model_kwargs", {})
-        self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=False) # @hidir: We turned it off causal for the stage 1
+        self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=True) # @hidir: Changed to True to enable MLA attention layers
         self.require_mla_grads_only()
         # self.generator.model.requires_grad_(True) 
 

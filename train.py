@@ -38,8 +38,6 @@ def main():
         trainer = ODETrainer(config)
     elif config.trainer == "score_distillation":
         trainer = ScoreDistillationTrainer(config)
-    elif config.trainer == "score_distillation_without_critic":
-        trainer = ScoreDistillationWithoutCriticTrainer(config)
     trainer.train()
 
     wandb.finish()

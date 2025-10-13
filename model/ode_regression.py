@@ -17,7 +17,6 @@ class ODERegression(BaseModel):
         super().__init__(args, device)
 
         # Step 1: Initialize all models
-
         if getattr(args, "generator_ckpt", False):
             print(f"Loading pretrained generator from {args.generator_ckpt}")
             state_dict = torch.load(args.generator_ckpt, map_location="cpu")[

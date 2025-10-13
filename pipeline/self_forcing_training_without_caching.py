@@ -84,7 +84,7 @@ class SelfForcingTrainingPipeline:
             dtype=noise.dtype
         )
 
-        # Step 1: Initialize KV cache to all zeros
+        # # Step 1: Initialize KV cache to all zeros
         # self._initialize_progressive_kv_cache( # @hidir: initialize hybrid kv cache
         #     batch_size=batch_size, dtype=noise.dtype, device=noise.device
         # )

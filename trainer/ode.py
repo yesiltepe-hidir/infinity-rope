@@ -20,6 +20,7 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.step = 0
+        self.max_step = config.max_step  # Default to 10000 if not specified
 
         # Step 1: Initialize the distributed training environment (rank, seed, dtype, logging etc.)
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -112,7 +113,6 @@ class Trainer:
             self.model.generator.load_state_dict(
                 state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
-
         ##############################################################################################################
 
         self.max_grad_norm = 10.0
@@ -237,7 +237,7 @@ class Trainer:
             gc.collect()
 
     def train(self):
-        while True:
+        while self.step <= self.max_step:
             self.train_one_step()
             if (self.step > 0) and (not self.config.no_save) and self.step % self.config.log_iters == 0:
                 self.save()
