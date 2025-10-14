@@ -189,7 +189,7 @@ class CausalWanSelfAttention(nn.Module):
                     query=padded_roped_query.transpose(2, 1),
                     key=padded_roped_key.transpose(2, 1),
                     value=padded_v.transpose(2, 1),
-                    block_mask=None # @hidir: We turned it off block mask for the stage 1
+                    block_mask=block_mask # @hidir: We turned it off block mask for the stage 1
                 )[:, :, :-padded_length].transpose(2, 1)
         else:
             frame_seqlen = math.prod(grid_sizes[0][1:]).item()
@@ -457,7 +457,7 @@ class CausalWanSelfAttentionMLA(nn.Module):
                     query=padded_roped_query.transpose(2, 1),
                     key=padded_roped_key.transpose(2, 1),
                     value=padded_v.transpose(2, 1),
-                    block_mask=None # @hidir: We turned it off block mask for the stage 1
+                    block_mask=block_mask # @hidir: We turned it off block mask for the stage 1
                 )[:, :, :-padded_length].transpose(2, 1)
                 
         elif kv_cache is not None:

@@ -146,8 +146,8 @@ MAX_STEP=$(grep "^max_step:" "$CONFIG_PATH" | sed 's/max_step: *//' | sed 's/ *#
 echo "Using max_step: ${MAX_STEP}"
 
 # Set generator_ckpt to null for the first iteration
-echo "Setting generator_ckpt to null for progressive training..."
-sed -i "s|^generator_ckpt:.*|generator_ckpt: null|" "$CONFIG_PATH"
+echo "Setting generator_ckpt to checkpoints/ode_init.pt for progressive training..."
+sed -i "s|^generator_ckpt:.*|generator_ckpt: checkpoints/ode_init.pt|" "$CONFIG_PATH"
 
 # Progressive training loop
 current_end=$((START_LAYER + 1))  # Start with 5,6
