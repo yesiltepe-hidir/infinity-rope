@@ -15,10 +15,9 @@ BASE_LOGDIR="logs/progressive"
 TRAIN_SCRIPT="train_ode_init.sh"
 
 # Layer configuration
-START_LAYER=5
-END_LAYER=28
-LAYER_STEP=2  # Add 2 layers each iteration
-
+START_LAYER=0
+END_LAYER=29
+LAYER_STEP=5  # Add 5 layers each iteration
 #########################################
 # Helper Functions
 #########################################
@@ -36,18 +35,19 @@ create_layer_range() {
             layers="${i}"
         fi
     done
-    
     echo "$layers"
 }
 
 # Function to update config file
 update_config() {
     local layer_range=$1
-    local config_file=$2
-    local generator_ckpt=$3
+    local trainable_range=$2
+    local config_file=$3
+    local generator_ckpt=$4
     
     echo "Updating config file: ${config_file}"
     echo "Setting mla_attn_layers to: ${layer_range}"
+    echo "Setting mla_attn_layers_trainable to: ${trainable_range}"
     if [ -n "$generator_ckpt" ]; then
         echo "Setting generator_ckpt to: ${generator_ckpt}"
     fi
@@ -58,6 +58,10 @@ update_config() {
     # Update the config file
     sed "s/^mla_attn_layers:.*/mla_attn_layers: '${layer_range}'/" "$config_file" > "$temp_config"
     sed -i "s/^  mla_attn_layers:.*/  mla_attn_layers: '${layer_range}'/" "$temp_config"
+    
+    # Update mla_attn_layers_trainable
+    sed -i "s/^mla_attn_layers_trainable:.*/mla_attn_layers_trainable: '${trainable_range}'/" "$temp_config"
+    sed -i "s/^  mla_attn_layers_trainable:.*/  mla_attn_layers_trainable: '${trainable_range}'/" "$temp_config"
     
     # Update generator_ckpt if provided
     if [ -n "$generator_ckpt" ]; then
@@ -73,14 +77,16 @@ update_config() {
 # Function to run training for a specific layer range
 run_training() {
     local layer_range=$1
-    local start_layer=$2
-    local end_layer=$3
+    local trainable_range=$2
+    local start_layer=$3
+    local end_layer=$4
     local logdir="${BASE_LOGDIR}/${start_layer}-${end_layer}"
     local generator_ckpt="${logdir}/checkpoint_model_$(printf "%06d" $MAX_STEP)/model.pt"
     
     echo ""
     echo "=========================================="
     echo "Training with layers: [${layer_range}]"
+    echo "Trainable layers: [${trainable_range}]"
     echo "Log directory: ${logdir}"
     echo "=========================================="
     echo ""
@@ -89,13 +95,13 @@ run_training() {
     mkdir -p "$logdir"
     
     # Update config file
-    update_config "$layer_range" "$CONFIG_PATH"
+    update_config "$layer_range" "$trainable_range" "$CONFIG_PATH"
     
     # Run training
     echo "Starting training..."
     LOGDIR="$logdir" bash "$TRAIN_SCRIPT"
 
-    update_config "$layer_range" "$CONFIG_PATH" "$generator_ckpt"
+    update_config "$layer_range" "$trainable_range" "$CONFIG_PATH" "$generator_ckpt"
     
     echo ""
     echo "Training completed for layers [${layer_range}]"
@@ -150,16 +156,20 @@ echo "Setting generator_ckpt to checkpoints/ode_init.pt for progressive training
 sed -i "s|^generator_ckpt:.*|generator_ckpt: checkpoints/ode_init.pt|" "$CONFIG_PATH"
 
 # Progressive training loop
-current_end=$((START_LAYER + 1))  # Start with 5,6
+current_end=$((START_LAYER + LAYER_STEP - 1))  # Start with 0-4 (5 layers)
 
 while [ $current_end -le $END_LAYER ]; do
-    # Create layer range string
+    # Create layer range string (all layers from 0 to current_end)
     layer_range=$(create_layer_range $START_LAYER $current_end)
     
-    # Run training for this layer range
-    run_training "$layer_range" "$START_LAYER" "$current_end"
+    # Create trainable range string (only the new layers being trained)
+    trainable_start=$((current_end - LAYER_STEP + 1))
+    trainable_range=$(create_layer_range $trainable_start $current_end)
     
-    # Move to next iteration (add 2 more layers)
+    # Run training for this layer range
+    run_training "$layer_range" "$trainable_range" "$START_LAYER" "$current_end"
+    
+    # Move to next iteration (add 5 more layers)
     current_end=$((current_end + LAYER_STEP))
 done
 
@@ -176,8 +186,9 @@ echo ""
 echo "All training sessions completed:"
 echo "  - Logs saved to: ${BASE_LOGDIR}"
 echo "  - Layer ranges trained:"
-for ((end=START_LAYER+1; end<=END_LAYER; end+=LAYER_STEP)); do
-    echo "    * ${START_LAYER}-${end}: layers [$(create_layer_range $START_LAYER $end)]"
+for ((end=START_LAYER+LAYER_STEP-1; end<=END_LAYER; end+=LAYER_STEP)); do
+    trainable_start=$((end - LAYER_STEP + 1))
+    echo "    * ${START_LAYER}-${end}: all layers [$(create_layer_range $START_LAYER $end)], trainable [$(create_layer_range $trainable_start $end)]"
 done
 echo ""
 echo "Latest checkpoints are available in their respective subdirectories."

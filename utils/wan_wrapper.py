@@ -120,7 +120,7 @@ class WanDiffusionWrapper(torch.nn.Module):
             is_causal=False,
             local_attn_size=-1,
             sink_size=0,
-            mla_attn_layers=None
+            mla_attn_layers=None,
     ):
         super().__init__()
 

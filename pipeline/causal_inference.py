@@ -174,7 +174,8 @@ class CausalInferencePipeline(torch.nn.Module):
             diffusion_start.record()
 
         # Step 3: Temporal denoising loop
-        all_num_frames = [self.num_frame_per_block] * num_blocks
+        # all_num_frames = [self.num_frame_per_block] * num_blocks
+        all_num_frames = [self.num_frame_per_block * num_blocks]
         if self.independent_first_frame and initial_latent is None:
             all_num_frames = [1] + all_num_frames
         for current_num_frames in all_num_frames:

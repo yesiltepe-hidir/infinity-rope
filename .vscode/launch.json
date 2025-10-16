@@ -36,7 +36,7 @@
             "program": "train.py",
             "justMyCode": false,
             "args": [
-                "--config_path", "configs/ode_init_debug.yaml",
+                "--config_path", "configs/ode_init.yaml",
                 "--logdir", "data/ode_init_debug",
                 "--disable-wandb"
             ],
@@ -54,6 +54,32 @@
                 "NUM_GPUS_PER_NODE": "1",
                 "ODE_PAIRS_PATH": "data/ode_pairs_lmdb",
                 "WAN_MODEL_PATH": "wan_models/Wan2.1-T2V-1.3B"
+            },
+            "python": "/home/hidir/latent-forcing-env/bin/python",
+            "preLaunchTask": "activate-venv"
+        },
+        {
+            "name": "Inference Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "inference.py",
+            "justMyCode": false,
+            "args": [
+                "--config_path", "configs/self_forcing_dmd.yaml",
+                "--output_folder", "videos/causal/0-29/2200",
+                "--checkpoint_path", "logs/progressive/0-14/checkpoint_model_005000/model.pt",
+                "--data_path", "prompts/MovieGenVideoBench_extended.txt"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "MASTER_ADDR": "localhost",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "RANK": "0",
+                "LOCAL_RANK": "0",
+                "WORLD_SIZE": "1",
+                "LOCAL_WORLD_SIZE": "1",
+                "MASTER_PORT": "12357"
             },
             "python": "/home/hidir/latent-forcing-env/bin/python",
             "preLaunchTask": "activate-venv"

@@ -29,6 +29,8 @@ class BaseModel(nn.Module):
 
         # Get model_kwargs from args
         model_kwargs = getattr(args, "model_kwargs", {})
+        self.mla_attn_layers_trainable = set(map(int, model_kwargs['mla_attn_layers_trainable'].split(',')))
+        del model_kwargs['mla_attn_layers_trainable']
         self.generator = WanDiffusionWrapper(**model_kwargs, is_causal=True)
         self.require_mla_grads_only()
         # self.generator.model.requires_grad_(True) 
@@ -66,7 +68,7 @@ class BaseModel(nn.Module):
         for i, block in enumerate(self.generator.model.blocks):
             if hasattr(block, 'self_attn'):
                 # Check if this is a CausalWanSelfAttentionMLA block
-                if isinstance(block.self_attn, CausalWanSelfAttentionMLA):
+                if isinstance(block.self_attn, CausalWanSelfAttentionMLA) and i in self.mla_attn_layers_trainable:
                     for param in block.self_attn.parameters():
                         param.requires_grad = True
                     mla_blocks_found += 1

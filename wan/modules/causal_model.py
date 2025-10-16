@@ -293,6 +293,8 @@ class CausalWanSelfAttentionMLA(nn.Module):
     ):
         kv_cache = None # @hidir: ODE Regression enters here
         # print('MLA Layer')
+        # print('block_mask', block_mask)
+        # print('--------------------------------')
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -1048,7 +1050,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         
         if self.freqs_student.device != device:
             self.freqs_student = self.freqs_student.to(device)
-
+            
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
@@ -1309,6 +1311,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         *args,
         **kwargs
     ):
+        del kwargs['kv_cache']
+        del kwargs['crossattn_cache']
+        del kwargs['current_start']
+        del kwargs['cache_start']
+        return self._forward_train(*args, **kwargs)
         if kwargs.get('kv_cache', None) is not None:
             return self._forward_inference(*args, **kwargs)
         else:
