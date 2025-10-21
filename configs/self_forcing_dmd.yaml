@@ -11,7 +11,7 @@ denoising_step_list:
 - 250
 warp_denoising_step: true # need to remove - 0 in denoising_step_list if warp_denoising_step is true
 ts_schedule: false
-num_train_timestep: 2000
+num_train_timestep: 1000
 timestep_shift: 5.0
 guidance_scale: 3.0
 denoising_loss_type: flow
@@ -47,7 +47,6 @@ trainer: score_distillation
 gradient_checkpointing: true
 num_frame_per_block: 3
 load_raw_video: false
-# mla_attn_layers: '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29'
 model_kwargs:
   timestep_shift: 5.0
-  mla_attn_layers: '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14'
+  mla_attn_layers: '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29'

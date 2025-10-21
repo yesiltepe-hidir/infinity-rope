@@ -20,7 +20,6 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.step = 0
-        self.max_step = config.max_step  # Default to 10000 if not specified
 
         # Step 1: Initialize the distributed training environment (rank, seed, dtype, logging etc.)
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -48,7 +47,7 @@ class Trainer:
             wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
                 name=config.config_name,
-                mode="offline",
+                mode="online",
                 entity=config.wandb_entity,
                 project=config.wandb_project,
                 dir=config.wandb_save_dir
@@ -102,14 +101,16 @@ class Trainer:
             assert total_batch_size == config.batch_size * self.world_size, "Gradient accumulation is not supported for ODE training"
         self.dataloader = cycle(dataloader)
 
-        self.step = 0
-
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
         if getattr(config, "generator_ckpt", False):
             print(f"Loading pretrained generator from {config.generator_ckpt}")
-            state_dict = torch.load(config.generator_ckpt, map_location="cpu")[
-                'generator']
+            try:
+                state_dict = torch.load(config.generator_ckpt, map_location="cpu")[
+                    'generator'] # @hidir: changed from 'generator' to 'generator_ema' since we are self_forcing_dmd.pt now. 
+            except KeyError:
+                state_dict = torch.load(config.generator_ckpt, map_location="cpu")[
+                'generator_ema'] # @hidir: changed from 'generator' to 'generator_ema' since we are self_forcing_dmd.pt now. 
             self.model.generator.load_state_dict(
                 state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
@@ -237,7 +238,7 @@ class Trainer:
             gc.collect()
 
     def train(self):
-        while self.step <= self.max_step:
+        while True:
             self.train_one_step()
             if (self.step > 0) and (not self.config.no_save) and self.step % self.config.log_iters == 0:
                 self.save()

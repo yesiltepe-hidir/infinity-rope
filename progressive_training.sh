@@ -11,13 +11,13 @@ set -e  # Exit on error
 
 # Base configuration
 CONFIG_PATH="configs/ode_init.yaml"
-BASE_LOGDIR="logs/progressive"
+BASE_LOGDIR="logs/end_to_end"
 TRAIN_SCRIPT="train_ode_init.sh"
 
 # Layer configuration
 START_LAYER=0
 END_LAYER=29
-LAYER_STEP=5  # Add 5 layers each iteration
+LAYER_STEP=30  # Add 5 layers each iteration
 #########################################
 # Helper Functions
 #########################################
@@ -152,8 +152,8 @@ MAX_STEP=$(grep "^max_step:" "$CONFIG_PATH" | sed 's/max_step: *//' | sed 's/ *#
 echo "Using max_step: ${MAX_STEP}"
 
 # Set generator_ckpt to null for the first iteration
-echo "Setting generator_ckpt to checkpoints/ode_init.pt for progressive training..."
-sed -i "s|^generator_ckpt:.*|generator_ckpt: checkpoints/ode_init.pt|" "$CONFIG_PATH"
+echo "Setting generator_ckpt to checkpoints/self_forcing_dmd.pt for progressive training..."
+sed -i "s|^generator_ckpt:.*|generator_ckpt: checkpoints/self_forcing_dmd.pt|" "$CONFIG_PATH"
 
 # Progressive training loop
 current_end=$((START_LAYER + LAYER_STEP - 1))  # Start with 0-4 (5 layers)

@@ -268,9 +268,11 @@ class CausalWanSelfAttentionMLA(nn.Module):
         self.qk_nope_dim = self.head_dim // 2
         
         # query projections
-        self.W_q_downsampled = torch.nn.Parameter(0.01*torch.randn((dim, self.q_latent_dim))) # @hidir: compressed multi-head latent attention
-        self.W_q_upsampled = torch.nn.Parameter(0.01*torch.randn((self.q_latent_dim, dim))) # @hidir: compressed multi-head latent attention
-        self.norm_q_latent = WanRMSNorm(self.q_latent_dim, eps=eps) if qk_norm else nn.Identity() # @hidir: must be learned again... (self.weight param)
+        self.q = nn.Linear(dim, dim)
+        self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+        # self.W_q_downsampled = torch.nn.Parameter(0.01*torch.randn((dim, self.q_latent_dim))) # @hidir: compressed multi-head latent attention
+        # self.W_q_upsampled = torch.nn.Parameter(0.01*torch.randn((self.q_latent_dim, dim))) # @hidir: compressed multi-head latent attention
+        # self.norm_q_latent = WanRMSNorm(self.q_latent_dim, eps=eps) if qk_norm else nn.Identity() # @hidir: must be learned again... (self.weight param)
 
         # kv projections
         self.W_kv_downsampled = torch.nn.Parameter(0.01*torch.randn((dim, self.kv_latent_dim + self.qk_rope_dim))) # @hidir: compressed multi-head latent attention
@@ -278,7 +280,8 @@ class CausalWanSelfAttentionMLA(nn.Module):
         self.norm_kv_latent = WanRMSNorm(self.kv_latent_dim, eps=eps) if qk_norm else nn.Identity() # @hidir: must be learned again... (self.weight param)
 
         # output projection
-        self.W_o = torch.nn.Parameter(0.01*torch.randn((dim,  dim)))
+        # self.W_o = torch.nn.Parameter(0.01*torch.randn((dim,  dim)))
+        self.o = nn.Linear(dim, dim)
 
     def forward(
         self,
@@ -314,8 +317,7 @@ class CausalWanSelfAttentionMLA(nn.Module):
         #  @hidir: projection for query
         def q_projection_fn(x):
             # @hidir:process query
-            compressed_q = self.norm_q_latent(x @ self.W_q_downsampled)
-            q = compressed_q @ self.W_q_upsampled
+            q = self.norm_q(self.q(x))
             q = q.view(b, s, n, d) # split into heads
             q_nope, q_rope = torch.split(q, [self.qk_nope_dim, self.qk_rope_dim], dim=-1)
             return q_nope, q_rope 
@@ -459,7 +461,7 @@ class CausalWanSelfAttentionMLA(nn.Module):
                     query=padded_roped_query.transpose(2, 1),
                     key=padded_roped_key.transpose(2, 1),
                     value=padded_v.transpose(2, 1),
-                    block_mask=block_mask # @hidir: We turned it off block mask for the stage 1
+                    block_mask=block_mask 
                 )[:, :, :-padded_length].transpose(2, 1)
                 
         elif kv_cache is not None:
@@ -489,16 +491,17 @@ class CausalWanSelfAttentionMLA(nn.Module):
             kv_cache["global_end_index"].fill_(current_end)
             kv_cache["local_end_index"].fill_(local_end_index)
         
-        # attention
-        x = attention(
-            roped_query,
-            roped_key,
-            v
-        )
+            # attention
+            x = attention(
+                roped_query,
+                roped_key,
+                v
+            )
 
         # output
         x = x.flatten(2) # @hidir: becomes 1 x 4680 x 1536, just like the original output
-        x = x @ self.W_o.T # @hidir: becomes 1 x 4680 x 1536
+        x = self.o(x)
+        # x = x @ self.W_o.T # @hidir: becomes 1 x 4680 x 1536
         return x # 1 x 4680 x 1536
 
 # @hidir: for progressive training, we will modify here. 
@@ -1311,11 +1314,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         *args,
         **kwargs
     ):
-        del kwargs['kv_cache']
-        del kwargs['crossattn_cache']
-        del kwargs['current_start']
-        del kwargs['cache_start']
-        return self._forward_train(*args, **kwargs)
+        # del kwargs['kv_cache']
+        # del kwargs['crossattn_cache']
+        # del kwargs['current_start']
+        # del kwargs['cache_start']
+        # return self._forward_train(*args, **kwargs)
         if kwargs.get('kv_cache', None) is not None:
             return self._forward_inference(*args, **kwargs)
         else:

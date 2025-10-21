@@ -52,10 +52,10 @@ class BaseModel(nn.Module):
 
     def require_mla_grads_only(self):
         """
-        Set only the MLA attention blocks to be trainable while freezing all other parameters.
+        Set only the newly defined MLA parameters to be trainable while freezing all other parameters.
         This function will:
         1. Freeze all parameters in the generator model
-        2. Unfreeze only the CausalWanSelfAttentionMLA blocks
+        2. Unfreeze only the specific MLA parameters: W_kv_downsampled, W_kv_upsampled, and norm_kv_latent
         """
         from wan.modules.causal_model import CausalWanSelfAttentionMLA
         
@@ -63,18 +63,29 @@ class BaseModel(nn.Module):
         for param in self.generator.model.parameters():
             param.requires_grad = False
         
-        # Then, unfreeze only the MLA attention blocks
+        # Then, unfreeze only the specific MLA parameters
         mla_blocks_found = 0
         for i, block in enumerate(self.generator.model.blocks):
             if hasattr(block, 'self_attn'):
                 # Check if this is a CausalWanSelfAttentionMLA block
                 if isinstance(block.self_attn, CausalWanSelfAttentionMLA) and i in self.mla_attn_layers_trainable:
-                    for param in block.self_attn.parameters():
-                        param.requires_grad = True
+                    # Only unfreeze the specific newly defined parameters
+                    if hasattr(block.self_attn, 'W_kv_downsampled'):
+                        block.self_attn.W_kv_downsampled.requires_grad = True
+                        print(f"Layer {i}: Unfroze W_kv_downsampled")
+                    if hasattr(block.self_attn, 'W_kv_upsampled'):
+                        block.self_attn.W_kv_upsampled.requires_grad = True
+                        print(f"Layer {i}: Unfroze W_kv_upsampled")
+                    if hasattr(block.self_attn, 'norm_kv_latent'):
+                        print(f"Layer {i}: Unfroze norm_kv_latent")
+                        for param in block.self_attn.norm_kv_latent.parameters():
+                            param.requires_grad = True
+                    
                     mla_blocks_found += 1
-                    print(f"Layer {i}: Unfroze MLA attention block")
+                    print(f"Layer {i}: Unfroze MLA kv projection parameters (W_kv_downsampled, W_kv_upsampled, norm_kv_latent)")
                 else:
                     print(f"Layer {i}: Skipped non-MLA block ({type(block.self_attn).__name__})")
+                print('--------------------------------')
         
         # Print summary of trainable parameters
         total_params = sum(p.numel() for p in self.generator.model.parameters())

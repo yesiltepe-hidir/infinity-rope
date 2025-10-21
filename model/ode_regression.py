@@ -19,8 +19,13 @@ class ODERegression(BaseModel):
         # Step 1: Initialize all models
         if getattr(args, "generator_ckpt", False):
             print(f"Loading pretrained generator from {args.generator_ckpt}")
-            state_dict = torch.load(args.generator_ckpt, map_location="cpu")[
-                'generator']
+            try:
+                state_dict = torch.load(args.generator_ckpt, map_location="cpu")[
+                    'generator'] # @hidir: changed from 'generator' to 'generator_ema' since we are self_forcing_dmd.pt now. 
+            except KeyError:
+                state_dict = torch.load(args.generator_ckpt, map_location="cpu")[
+                    'generator_ema'] # @hidir: changed from 'generator' to 'generator_ema' since we are self_forcing_dmd.pt now. 
+                    
             self.generator.load_state_dict(
                 state_dict, strict=False # @hidir: changed from True to False since we added new parameters!
             )
@@ -59,7 +64,7 @@ class ODERegression(BaseModel):
             batch_size,
             num_frames,
             self.num_frame_per_block,
-            uniform_timestep=False
+            uniform_timestep=True
         )
         if self.args.i2v:
             index[:, 0] = len(self.denoising_step_list) - 1
