@@ -110,7 +110,7 @@ class CausalInferencePipeline(torch.nn.Module):
 
         # Step 1: Initialize KV cache to all zeros
         if self.kv_cache1 is None:
-            self._initialize_compressed_kv_cache(
+            self._initialize_kv_cache(
                 batch_size=batch_size,
                 dtype=noise.dtype,
                 device=noise.device
@@ -173,12 +173,12 @@ class CausalInferencePipeline(torch.nn.Module):
             torch.cuda.synchronize()
             diffusion_start.record()
 
-        # Step 3: Temporal denoising loop
-        # all_num_frames = [self.num_frame_per_block] * num_blocks
-        all_num_frames = [self.num_frame_per_block * num_blocks]
+        # Step 3: Temporal denoising loop @hidir: Inference  enters here
+        all_num_frames = [self.num_frame_per_block] * num_blocks 
+        # all_num_frames = [self.num_frame_per_block * num_blocks]
         if self.independent_first_frame and initial_latent is None:
             all_num_frames = [1] + all_num_frames
-        for current_num_frames in all_num_frames:
+        for current_block_index, current_num_frames in enumerate(all_num_frames):
             if profile:
                 block_start.record()
 
@@ -276,30 +276,9 @@ class CausalInferencePipeline(torch.nn.Module):
         else:
             return video
 
-    def _initialize_compressed_kv_cache(self, batch_size, dtype, device):
-        """
-        Initialize a Per-GPU compressed KV cache for the Wan model.
-        """
-        kv_cache1 = []
-        if self.local_attn_size != -1:
-            # Use the local attention size to compute the KV cache size
-            kv_cache_size = self.local_attn_size * self.frame_seq_length
-        else:
-            # Use the default KV cache size
-            kv_cache_size = 32760
-
-        for _ in range(self.num_transformer_blocks):
-            kv_cache1.append({
-                "compressed_kv": torch.zeros([batch_size, kv_cache_size, 1088], dtype=dtype, device=device),
-                "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
-            })
-
-        self.kv_cache1 = kv_cache1  # always store the clean cache
-
-    # def _initialize_kv_cache(self, batch_size, dtype, device):
+    # def _initialize_compressed_kv_cache(self, batch_size, dtype, device):
     #     """
-    #     Initialize a Per-GPU KV cache for the Wan model.
+    #     Initialize a Per-GPU compressed KV cache for the Wan model.
     #     """
     #     kv_cache1 = []
     #     if self.local_attn_size != -1:
@@ -311,13 +290,34 @@ class CausalInferencePipeline(torch.nn.Module):
 
     #     for _ in range(self.num_transformer_blocks):
     #         kv_cache1.append({
-    #             "k": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
-    #             "v": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
+    #             "compressed_kv": torch.zeros([batch_size, kv_cache_size, 1088], dtype=dtype, device=device),
     #             "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
     #             "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
     #         })
 
     #     self.kv_cache1 = kv_cache1  # always store the clean cache
+
+    def _initialize_kv_cache(self, batch_size, dtype, device):
+        """
+        Initialize a Per-GPU KV cache for the Wan model.
+        """
+        kv_cache1 = []
+        if self.local_attn_size != -1:
+            # Use the local attention size to compute the KV cache size
+            kv_cache_size = self.local_attn_size * self.frame_seq_length
+        else:
+            # Use the default KV cache size
+            kv_cache_size = 32760
+
+        for _ in range(self.num_transformer_blocks):
+            kv_cache1.append({
+                "k": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
+                "v": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
+                "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
+            })
+
+        self.kv_cache1 = kv_cache1  # always store the clean cache
 
     def _initialize_crossattn_cache(self, batch_size, dtype, device):
         """

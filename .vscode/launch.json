@@ -67,8 +67,10 @@
             "args": [
                 "--config_path", "configs/self_forcing_dmd.yaml",
                 "--output_folder", "videos/causal/0-29/2200",
-                "--checkpoint_path", "logs/progressive/0-14/checkpoint_model_005000/model.pt",
-                "--data_path", "prompts/MovieGenVideoBench_extended.txt"
+                "--checkpoint_path", "checkpoints/self_forcing_dmd.pt",
+                "--data_path", "prompts/MovieGenVideoBench_extended.txt",
+                "--use_ema", 
+                "--num_output_frames", "129"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
