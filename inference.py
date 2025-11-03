@@ -16,6 +16,7 @@ from pipeline import (
 )
 from utils.dataset import TextDataset, TextImagePairDataset
 from utils.misc import set_seed
+from utils.interactive import add_subtitles
 
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
 
@@ -131,7 +132,7 @@ def encode(self, videos: torch.Tensor) -> torch.Tensor:
     output = torch.stack(output, dim=0)
     return output
 
-
+subtitles = ''
 for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     idx = batch_data['idx'].item()
 
@@ -147,7 +148,10 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
 
     if args.i2v:
         # For image-to-video, batch contains image and caption
-        prompt = batch['prompts'][0]  # Get caption from batch
+        prompt_and_subtitles = batch['prompts'][0]
+        prompt = prompt_and_subtitles.split(';')[0]  # Get caption from batch
+        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch
+        print(prompt)
         prompts = [prompt] * args.num_samples
 
         # Process the image
@@ -162,7 +166,10 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         )
     else:
         # For text-to-video, batch is just the text prompt
-        prompt = batch['prompts'][0]
+        prompt_and_subtitles = batch['prompts'][0]
+        prompt = prompt_and_subtitles.split(';')[0]  # Get caption from batch
+        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch
+        print(prompt)
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
         if extended_prompt is not None:
             prompts = [extended_prompt] * args.num_samples
@@ -191,6 +198,9 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
 
     # Clear VAE cache
     pipeline.vae.model.clear_cache()
+
+    subtitles = subtitles.split('|')
+    video = add_subtitles(video, subtitles)
 
     # Save the video if the current prompt is not a dummy prompt
     if idx < num_prompts:
