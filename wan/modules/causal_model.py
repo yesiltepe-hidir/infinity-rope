@@ -255,6 +255,7 @@ class CausalWanSelfAttention(nn.Module):
                 grid_sizes_full = grid_sizes.clone()
                 grid_sizes_full[0][0] = min(local_end_index // frame_seqlen, max_attention_frames)
                 start_frame = current_start_frame if current_start_frame < max_attention_frames else max_attention_frames - num_new_frames
+                # start_frame = 1 if local_start_index == frame_seqlen else start_frame
                 roped_query = causal_rope_apply(
                     q, grid_sizes, freqs, start_frame=start_frame).type_as(v)
                 roped_key = causal_rope_apply(

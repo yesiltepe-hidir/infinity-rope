@@ -81,9 +81,11 @@ class CausalInferencePipeline(torch.nn.Module):
             num_blocks = (num_frames - 1) // self.num_frame_per_block
         num_input_frames = initial_latent.shape[1] if initial_latent is not None else 0
         num_output_frames = num_frames + num_input_frames  # add the initial latent frames
-        conditional_dict = self.text_encoder(
-            text_prompts=text_prompts
-        )
+        
+        # ================================
+        # Interactive Video Generation
+        # ================================
+        conditional_dict_list = [self.text_encoder(text_prompts=[tp]) for tp in text_prompts[0].split('|')]
 
         if low_memory:
             gpu_memory_preservation = get_cuda_free_memory_gb(gpu) + 5
@@ -181,7 +183,16 @@ class CausalInferencePipeline(torch.nn.Module):
         for current_block_index, current_num_frames in enumerate(all_num_frames):
             if profile:
                 block_start.record()
-
+            # ---------------------------------------------------------------- #
+            conditional_dict = conditional_dict_list[current_block_index // 14]
+            if current_block_index % 14 == 0 and current_block_index != 0:
+                n_layers = len(self.crossattn_cache)
+                for i in range(n_layers):
+                    self.crossattn_cache[i]['is_init'] = False
+                    self.kv_cache1[i]['k'][:, 1560:4680] = self.kv_cache1[i]['k'][:, -3120:]
+                    self.kv_cache1[i]['v'][:, 1560:4680] = self.kv_cache1[i]['v'][:, -3120:]
+                    self.kv_cache1[i]['local_end_index'] = torch.tensor([4680], dtype=torch.long, device=noise.device)
+            # ---------------------------------------------------------------- #
             noisy_input = noise[
                 :, current_start_frame - num_input_frames:current_start_frame + current_num_frames - num_input_frames]
 
