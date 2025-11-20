@@ -1,16 +1,21 @@
 import torch
-from typing import List
+from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+import re
 
 
-def add_subtitles(video: torch.Tensor, subtitles: List[str]) -> torch.Tensor:
+def add_subtitles(video: torch.Tensor, subtitles: List[str], fps: float = 16.0, 
+                  time_durations: Optional[List[float]] = None) -> torch.Tensor:
     """
-    Add subtitles to a video tensor by dividing frames equally among subtitles.
+    Add subtitles to a video tensor, aligned with time durations if provided.
     
     Args:
         video: Tensor of shape [b, t, h, w, c] with values in [0, 255]
         subtitles: List of strings to display as subtitles
+        fps: Frames per second of the video (default: 16.0)
+        time_durations: Optional list of durations in seconds for each subtitle.
+                       If None, frames are divided equally among subtitles.
     
     Returns:
         Video tensor with subtitles rendered on frames
@@ -19,17 +24,35 @@ def add_subtitles(video: torch.Tensor, subtitles: List[str]) -> torch.Tensor:
         return video
     
     b, t, h, w, c = video.shape
-    frames_per_subtitle = t // len(subtitles)
     
     # Convert to numpy for easier manipulation
     video_np = video.numpy().astype(np.uint8)
+    
+    # Calculate frame ranges for each subtitle
+    if time_durations is not None and len(time_durations) == len(subtitles):
+        # Use time-based alignment
+        frame_ranges = []
+        current_frame = 0
+        for duration in time_durations:
+            num_frames = int(duration * fps)
+            start_frame = current_frame
+            end_frame = min(current_frame + num_frames, t)
+            frame_ranges.append((start_frame, end_frame))
+            current_frame = end_frame
+    else:
+        # Fall back to equal division
+        frames_per_subtitle = t // len(subtitles)
+        frame_ranges = []
+        for subtitle_idx in range(len(subtitles)):
+            start_frame = subtitle_idx * frames_per_subtitle
+            end_frame = (subtitle_idx + 1) * frames_per_subtitle if subtitle_idx < len(subtitles) - 1 else t
+            frame_ranges.append((start_frame, end_frame))
     
     # Process each batch
     for batch_idx in range(b):
         # Process each subtitle
         for subtitle_idx, subtitle in enumerate(subtitles):
-            start_frame = subtitle_idx * frames_per_subtitle
-            end_frame = (subtitle_idx + 1) * frames_per_subtitle if subtitle_idx < len(subtitles) - 1 else t
+            start_frame, end_frame = frame_ranges[subtitle_idx]
             
             # Apply subtitle to frames in this range
             for frame_idx in range(start_frame, end_frame):

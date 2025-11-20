@@ -1,6 +1,7 @@
 import argparse
 import torch
 import os
+import re
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms
@@ -20,6 +21,17 @@ from utils.interactive import add_subtitles
 
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
 
+def sanitize_filename(text, max_length=100):
+    """Remove or replace invalid filename characters."""
+    # Replace invalid characters with underscores
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', text)
+    # Replace multiple spaces/underscores with single underscore
+    sanitized = re.sub(r'[\s_]+', '_', sanitized)
+    # Remove leading/trailing underscores and dots
+    sanitized = sanitized.strip('_.')
+    # Truncate to max_length
+    return sanitized[:max_length] if len(sanitized) > max_length else sanitized
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
 parser.add_argument("--checkpoint_path", type=str, help="Path to the checkpoint folder")
@@ -32,6 +44,8 @@ parser.add_argument("--i2v", action="store_true", help="Whether to perform I2V (
 parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA parameters")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to generate per prompt")
+parser.add_argument("--output_index", type=int, default=None,
+                    help="Override the index in output filename (default: uses seed_idx from num_samples loop)")
 parser.add_argument("--save_with_index", action="store_true",
                     help="Whether to save the video using the index or prompt as the filename")
 args = parser.parse_args()
@@ -153,6 +167,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch
         print(prompt)
         prompts = [prompt] * args.num_samples
+        extended_prompt = None  # i2v doesn't use extended prompts
 
         # Process the image
         image = batch['image'].squeeze(0).unsqueeze(0).unsqueeze(2).to(device=device, dtype=torch.bfloat16)
@@ -200,15 +215,48 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     pipeline.vae.model.clear_cache()
 
     subtitles = subtitles.split('|')
-    video = add_subtitles(video, subtitles)
+    
+    # Parse time durations from prompts for subtitle alignment
+    time_durations = None
+    prompt_for_timing = extended_prompt if extended_prompt is not None else prompt
+    if prompt_for_timing:
+        # Parse durations from prompt (format: "text[5s] | text[10s]")
+        scene_parts = [part.strip() for part in prompt_for_timing.split('|')]
+        time_durations = []
+        for scene_part in scene_parts:
+            duration_match = re.search(r'\[(\d+\.?\d*)\s*s\]', scene_part)
+            if duration_match:
+                duration_seconds = float(duration_match.group(1))
+                time_durations.append(duration_seconds)
+            else:
+                # If no duration specified, use equal division (will be handled by add_subtitles)
+                time_durations = None
+                break
+        
+        # Only use time_durations if we have the same number as subtitles
+        if time_durations is not None and len(time_durations) != len(subtitles):
+            time_durations = None
+    
+    video = add_subtitles(video, subtitles, fps=16.0, time_durations=time_durations)
 
     # Save the video if the current prompt is not a dummy prompt
     if idx < num_prompts:
         model = "regular" if not args.use_ema else "ema"
         for seed_idx in range(args.num_samples):
+            # Use output_index if provided, otherwise use seed value, otherwise use seed_idx
+            if args.output_index is not None:
+                file_idx = args.output_index
+            elif args.num_samples == 1:
+                # When generating single sample, use seed value in filename
+                file_idx = args.seed
+            else:
+                file_idx = seed_idx
             # All processes save their videos
             if args.save_with_index:
-                output_path = os.path.join(args.output_folder, f'{idx}-{seed_idx}_{model}.mp4')
+                output_path = os.path.join(args.output_folder, f'{idx}-{file_idx}_{model}.mp4')
             else:
-                output_path = os.path.join(args.output_folder, f'{prompt[:100]}-{seed_idx}.mp4')
+                safe_prompt = sanitize_filename(prompt, max_length=100)
+                output_path = os.path.join(args.output_folder, f'{safe_prompt}-{file_idx}.mp4')
+            # Ensure the output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             write_video(output_path, video[seed_idx], fps=16)

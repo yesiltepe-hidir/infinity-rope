@@ -1,5 +1,6 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import torch
+import re
 
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 
@@ -43,6 +44,12 @@ class CausalInferencePipeline(torch.nn.Module):
 
         if self.num_frame_per_block > 1:
             self.generator.model.num_frame_per_block = self.num_frame_per_block
+        
+        # Default FPS for scene duration calculations
+        # Formula: blocks = (seconds * fps) / (4 * num_frame_per_block)
+        # Where 4 is the upsampling factor from latent frames to actual frames
+        self.default_fps = getattr(args, "fps", 16)
+        self.default_blocks_per_scene = 14  # Default: 14 blocks = 10.5 seconds at 16 fps
 
     def inference(
         self,
@@ -85,7 +92,22 @@ class CausalInferencePipeline(torch.nn.Module):
         # ================================
         # Interactive Video Generation
         # ================================
-        conditional_dict_list = [self.text_encoder(text_prompts=[tp]) for tp in text_prompts[0].split('|')]
+        # Parse scene durations from prompts
+        scene_prompts, scene_block_counts = self._parse_scene_durations(text_prompts[0])
+        conditional_dict_list = [self.text_encoder(text_prompts=[tp]) for tp in scene_prompts]
+        
+        # Calculate cumulative block indices for scene transitions
+        # scene_block_boundaries[i] is the block index where scene i+1 starts
+        scene_block_boundaries = []
+        cumulative_blocks = 0
+        for block_count in scene_block_counts[:-1]:  # Exclude last scene
+            cumulative_blocks += block_count
+            scene_block_boundaries.append(cumulative_blocks)
+        
+        print(f"Scene configuration:")
+        for i, (prompt, blocks) in enumerate(zip(scene_prompts, scene_block_counts)):
+            duration_seconds = (blocks * 4 * self.num_frame_per_block) / self.default_fps
+            print(f"  Scene {i+1}: {blocks} blocks ({duration_seconds:.2f}s) - '{prompt[:50]}...'")
 
         if low_memory:
             gpu_memory_preservation = get_cuda_free_memory_gb(gpu) + 5
@@ -136,6 +158,8 @@ class CausalInferencePipeline(torch.nn.Module):
         # Step 2: Cache context feature
         current_start_frame = 0
         if initial_latent is not None:
+            # Use the first scene's conditional dict for initial latent processing
+            initial_conditional_dict = conditional_dict_list[0]
             timestep = torch.ones([batch_size, 1], device=noise.device, dtype=torch.int64) * 0
             if self.independent_first_frame:
                 # Assume num_input_frames is 1 + self.num_frame_per_block * num_input_blocks
@@ -144,7 +168,7 @@ class CausalInferencePipeline(torch.nn.Module):
                 output[:, :1] = initial_latent[:, :1]
                 self.generator(
                     noisy_image_or_video=initial_latent[:, :1],
-                    conditional_dict=conditional_dict,
+                    conditional_dict=initial_conditional_dict,
                     timestep=timestep * 0,
                     kv_cache=self.kv_cache1,
                     crossattn_cache=self.crossattn_cache,
@@ -162,7 +186,7 @@ class CausalInferencePipeline(torch.nn.Module):
                 output[:, current_start_frame:current_start_frame + self.num_frame_per_block] = current_ref_latents
                 self.generator(
                     noisy_image_or_video=current_ref_latents,
-                    conditional_dict=conditional_dict,
+                    conditional_dict=initial_conditional_dict,
                     timestep=timestep * 0,
                     kv_cache=self.kv_cache1,
                     crossattn_cache=self.crossattn_cache,
@@ -184,8 +208,17 @@ class CausalInferencePipeline(torch.nn.Module):
             if profile:
                 block_start.record()
             # ---------------------------------------------------------------- #
-            conditional_dict = conditional_dict_list[current_block_index // 14]
-            if current_block_index % 14 == 0 and current_block_index != 0:
+            # Determine which scene this block belongs to
+            scene_index = 0
+            for boundary in scene_block_boundaries:
+                if current_block_index < boundary:
+                    break
+                scene_index += 1
+            conditional_dict = conditional_dict_list[scene_index]
+            
+            # Check if we need to flush KV cache (at scene boundaries)
+            # Flush when we transition to a new scene (except at the start)
+            if current_block_index in scene_block_boundaries:
                 n_layers = len(self.crossattn_cache)
                 for i in range(n_layers):
                     self.crossattn_cache[i]['is_init'] = False
@@ -343,3 +376,45 @@ class CausalInferencePipeline(torch.nn.Module):
                 "is_init": False
             })
         self.crossattn_cache = crossattn_cache
+
+    def _parse_scene_durations(self, prompt: str) -> Tuple[List[str], List[int]]:
+        """
+        Parse scene prompts with optional durations.
+        
+        Format: "prompt1[5s] | prompt2[15s] | prompt3"
+        - If duration is specified (e.g., [5s]), use that duration
+        - If no duration is specified, use the default (14 blocks = 10.5 seconds)
+        
+        Returns:
+            Tuple of (prompt_texts, block_counts_per_scene)
+        """
+        # Split by | to get individual scene prompts
+        scene_parts = [part.strip() for part in prompt.split('|')]
+        prompt_texts = []
+        block_counts = []
+        
+        for scene_part in scene_parts:
+            # Check if duration is specified: [Xs] or [X.5s] etc.
+            duration_match = re.search(r'\[(\d+\.?\d*)\s*s\]', scene_part)
+            
+            if duration_match:
+                # Extract duration in seconds
+                duration_seconds = float(duration_match.group(1))
+                # Remove the duration from the prompt text
+                prompt_text = re.sub(r'\[\d+\.?\d*\s*s\]', '', scene_part).strip()
+                
+                # Convert seconds to blocks
+                # Formula: blocks = (seconds * fps) / (4 * num_frame_per_block)
+                # Where 4 is the upsampling factor from latent to actual frames
+                blocks = int((duration_seconds * self.default_fps) / (4 * self.num_frame_per_block))
+                # Ensure at least 1 block
+                blocks = max(1, blocks)
+            else:
+                # No duration specified, use default
+                prompt_text = scene_part
+                blocks = self.default_blocks_per_scene
+            
+            prompt_texts.append(prompt_text)
+            block_counts.append(blocks)
+        
+        return prompt_texts, block_counts
