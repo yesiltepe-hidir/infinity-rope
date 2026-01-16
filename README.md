@@ -68,7 +68,7 @@ Infinity-RoPE utilizes a specific syntax to control temporal duration and scene 
 | **`[Ns]`** | **Duration** | Sets the segment length in seconds (e.g., `[10s]`). |
 | **`\|`** | **Separator** | Chains multiple action prompts together. |
 | **`#`** | **Scene Cut** | When placed inside brackets (e.g., `[10s#]`), it triggers a hard cut. |
-
+| **`;`** | **Subtitle Toggle** | Separates action prompts (left) from subtitle text (right). |
 ---
 
 ### 2. Examples
