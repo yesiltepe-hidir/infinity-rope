@@ -6,7 +6,7 @@
 set -e  # Exit on any error
 
 ENV_NAME="latent-forcing"
-ENV_PATH="/home/hidir/latent-forcing-env"
+ENV_PATH="../latent-forcing-env"
 PYTHON_VERSION="3.10"
 
 echo "Setting up latent-forcing environment..."
@@ -22,7 +22,7 @@ if ! command -v python3.10 &> /dev/null; then
 fi
 
 # Create the environment directory if it doesn't exist
-sudo mkdir -p "$(dirname "$ENV_PATH")"
+mkdir -p "$(dirname "$ENV_PATH")"
 
 # Create virtual environment using venv
 echo "Creating virtual environment at $ENV_PATH..."
@@ -63,13 +63,9 @@ pip install -U "huggingface_hub[cli]"
 echo "Downloading Wan-AI/Wan2.1-T2V-1.3B model..."
 huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B --local-dir-use-symlinks False --local-dir wan_models/Wan2.1-T2V-1.3B
 
-# Download gdhe17/Self-Forcing model
+# Download self-forcing checkpoint with attention sink
 echo "Downloading gdhe17/Self-Forcing model..."
-huggingface-cli download gdhe17/Self-Forcing checkpoints/self_forcing_dmd.pt --local-dir .
-
-# Download gdhe17/Self-Forcing ODE initialization checkpoint
-echo "Downloading gdhe17/Self-Forcing ODE initialization checkpoint..."
-huggingface-cli download gdhe17/Self-Forcing checkpoints/ode_init.pt --local-dir .
+huggingface-cli download SOTAMak1r/Infinite-Forcing --local-dir checkpoints/
 
 # Download gdhe17/Self-Forcing text prompts
 echo "Downloading gdhe17/Self-Forcing text prompts..."

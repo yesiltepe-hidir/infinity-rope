@@ -24,18 +24,9 @@ flex_attention = torch.compile(
     flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
 
 
-def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
+def causal_rope_apply(x, grid_sizes, freqs, start_frame=0, scene_cut=False):
     #@hidir: rolling rope
     n, c = x.size(2), x.size(3) // 2
-
-    # is_sinked = x.shape[1] > 32760
-    # if is_sinked:
-    #     # print('--------------------------------')
-    #     # print('shape of x: ', x.shape)
-    #     # print('--------------------------------')
-    #     num_of_sinked = x.shape[1] - 32760
-    #     sinked_tokens = x[:, :num_of_sinked]
-    #     x = x[:, num_of_sinked:]
 
     # split freqs
     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
@@ -49,8 +40,16 @@ def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
         # precompute multipliers
         x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
             seq_len, n, -1, 2)) # @hidir: becomes 4680 x 12 x 32
+        
+        if scene_cut:
+            starting_group = freqs[0][start_frame:start_frame + f-3]
+            final_group = freqs[0][45:48]
+            temporal_freqs = torch.cat([starting_group, final_group], dim=0)
+        else:
+            temporal_freqs = freqs[0][start_frame:start_frame + f]
+
         freqs_i = torch.cat([
-            freqs[0][start_frame:start_frame + f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            temporal_freqs.view(f, 1, 1, -1).expand(f, h, w, -1),
             freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
             freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
         ],
@@ -62,9 +61,8 @@ def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
 
         # append to collection
         output.append(x_i)
+        
     result = torch.stack(output).type_as(x)
-    # if is_sinked:
-    #     result = torch.cat([sinked_tokens, result], dim=1)
     return result
 
 
@@ -214,8 +212,7 @@ class CausalWanSelfAttention(nn.Module):
             sink_tokens = self.sink_size * frame_seqlen
             max_attention_frames = self.max_attention_size // frame_seqlen
             # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
-            kv_cache_size = max_attention_frames * 1560 #32760
-            # rope_sinked = current_start_frame - 18
+            kv_cache_size = max_attention_frames * frame_seqlen #32760
             # after 21 frames, we evict, and rotate the cached key from scratch. 
             if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
                     (num_new_tokens + kv_cache["local_end_index"].item()) > kv_cache_size):
@@ -240,10 +237,13 @@ class CausalWanSelfAttention(nn.Module):
                 k_for_rope = kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
                 grid_sizes_full = grid_sizes.clone()
                 grid_sizes_full[0][0] = max_attention_frames
+                start_frame = max_attention_frames-num_new_frames
+                scene_cut = kv_cache.get("scene_cut", False)
                 roped_query = causal_rope_apply(
-                    q, grid_sizes, freqs, start_frame=max_attention_frames-num_new_frames).type_as(v)
+                    q, grid_sizes, freqs, start_frame=start_frame, scene_cut=scene_cut).type_as(v)
                 roped_key = causal_rope_apply(
-                    k_for_rope, grid_sizes_full, freqs, start_frame=0).type_as(v)
+                    k_for_rope, grid_sizes_full, freqs, start_frame=0, scene_cut=scene_cut).type_as(v)          
+                roped_key[:, :frame_seqlen] = k_for_rope[:, :frame_seqlen]
 
             else: # first 21 frame happens here
                 # Assign new keys/values directly up to current_end
@@ -255,11 +255,15 @@ class CausalWanSelfAttention(nn.Module):
                 grid_sizes_full = grid_sizes.clone()
                 grid_sizes_full[0][0] = min(local_end_index // frame_seqlen, max_attention_frames)
                 start_frame = current_start_frame if current_start_frame < max_attention_frames else max_attention_frames - num_new_frames
-                # start_frame = 1 if local_start_index == frame_seqlen else start_frame
+                scene_cut = kv_cache.get("scene_cut", False)
                 roped_query = causal_rope_apply(
-                    q, grid_sizes, freqs, start_frame=start_frame).type_as(v)
+                    q, grid_sizes, freqs, start_frame=start_frame, scene_cut=scene_cut).type_as(v)
                 roped_key = causal_rope_apply(
-                    k_for_rope, grid_sizes_full, freqs, start_frame=0).type_as(v)
+                        k_for_rope, grid_sizes_full, freqs, start_frame=0, scene_cut=scene_cut).type_as(v)
+                if local_start_index == 0:
+                    kv_cache["k"][:, :frame_seqlen] = roped_key[:, :frame_seqlen]
+                else:
+                    roped_key[:, :frame_seqlen] = k_for_rope[:, :frame_seqlen]
                     
             x = attention(
                 roped_query,
@@ -275,190 +279,9 @@ class CausalWanSelfAttention(nn.Module):
         x = self.o(x)
         return x
 
-class CausalWanSelfAttentionMLA(nn.Module):
-
-    def __init__(self,
-                 dim,
-                 num_heads,
-                 local_attn_size=-1,
-                 sink_size=0,
-                 qk_norm=True,
-                 eps=1e-6): #@hidir: compressed multi-head latent attention    
-        assert dim % num_heads == 0
-        super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.local_attn_size = local_attn_size
-        self.sink_size = sink_size
-        self.qk_norm = qk_norm
-        self.eps = eps
-        self.max_attention_size = 32760 if local_attn_size == -1 else local_attn_size * 1560
-
-        # @hidir: compressed multi-head latent attention dims
-        self.q_latent_dim = dim // 2
-        self.kv_latent_dim = (2*dim) // 3
-        # @hidir: decoupled rope dims
-        self.qk_rope_dim = self.head_dim // 2
-        self.qk_nope_dim = self.head_dim // 2
-        
-        # query projections
-        self.q = nn.Linear(dim, dim)
-        self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
-        # kv projections
-        self.W_kv_downsampled = torch.nn.Parameter(0.01*torch.randn((dim, self.kv_latent_dim + self.qk_rope_dim))) # @hidir: compressed multi-head latent attention
-        self.W_kv_upsampled = torch.nn.Parameter(0.01*torch.randn((self.kv_latent_dim, dim + self.num_heads * self.qk_nope_dim))) # @hidir: compressed multi-head latent attention
-        self.norm_kv_latent = WanRMSNorm(self.kv_latent_dim, eps=eps) if qk_norm else nn.Identity() # @hidir: must be learned again... (self.weight param)
-
-        # output projection
-        self.o = nn.Linear(dim, dim)
-
-    def forward(
-        self,
-        x,
-        seq_lens,
-        grid_sizes,
-        freqs,
-        block_mask,
-        kv_cache=None,
-        current_start=0,
-        cache_start=None
-    ):
-        r"""
-        Args:
-            x(Tensor): Shape [B, L, num_heads, C / num_heads]
-            seq_lens(Tensor): Shape [B]
-            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
-            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
-            block_mask (BlockMask)
-        """
-        b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        if cache_start is None:
-            cache_start = current_start
-        
-        #  @hidir: projection for query
-        def q_projection_fn(x):
-            # @hidir:process query
-            q = self.norm_q(self.q(x))
-            q = q.view(b, s, n, d) # split into heads
-            q_nope, q_rope = torch.split(q, [self.qk_nope_dim, self.qk_rope_dim], dim=-1)
-            return q_nope, q_rope 
-        q_nope, q_rope = q_projection_fn(x) # q_nope and q_rope are of shape 1 x 4680 x 12 x 64
-
-        # @hidir: decoupled rope for query
-        def decoupled_rope_q_fn(q_nope, q_rope, grid_sizes, start_frame):
-            # @hidir: decoupled rope for query
-            roped_query = causal_rope_apply( # @hidir: apply rope to q_rope
-                q_rope, grid_sizes, freqs, start_frame=start_frame).type_as(q_rope)
-            roped_query = torch.cat([q_nope, roped_query], dim=-1) # @hidir: still must be of size 1 x 4680 x 12 x 128
-            return roped_query
-
-        # @hidir: projection for shared key value
-        def kv_projection_fn(x, kv_cache):
-            # @hidir: process current shared key value
-            compressed_kv = x @ self.W_kv_downsampled # 1 x 4680 x 1088  | @hidir: only this is cached!
-            kv_cache["compressed_kv"][:, local_start_index:local_end_index] = compressed_kv
-            # @hidir: process cached shared key value [FIXME]: what if cache us full? we haven't evicted yet!
-            kv_cache_slice = kv_cache["compressed_kv"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
-            kv_nope, k_rope  = torch.split(kv_cache_slice, [self.kv_latent_dim, self.qk_rope_dim], dim=-1) # 1 x 4680 x 1024, 1 x 4680 x 64
-            # @hidir: normalize
-            kv_nope = self.norm_kv_latent(kv_nope)
-            # @hidir: decouple nope and rope parts
-            return kv_nope, k_rope
-
-        # @hidir: get key and value from shared key value
-        def get_k_v_from_kv_nope(kv_nope):
-            kv = kv_nope @ self.W_kv_upsampled # shape: 1 x 4680 x 2304
-            kv = kv.view(b, -1, n, self.qk_nope_dim + self.head_dim) # split into heads
-            k_nope, v = torch.split(kv, [self.qk_nope_dim, self.head_dim], dim=-1) # 1 x 4680 x 12 x 64, 1 x 4680 x 12 x 128
-            return k_nope, v
-
-        # @hidir: decoupled rope for key
-        def decoupled_rope_k_fn(k_nope, k_rope, grid_sizes, start_frame):
-            k_rope = k_rope.view(b, -1, 1, self.qk_rope_dim) # 1 x (32760) x 1 x 64
-            roped_key = causal_rope_apply(
-                k_rope, grid_sizes, freqs, start_frame=start_frame).type_as(k_rope)
-            # optimization: repeat the rotated k for all heads AFTER the rope is applied.
-            roped_key = roped_key.repeat(1, 1, n, 1) # 1 x 4680 x 12 x 64
-            roped_key = torch.cat([k_nope, roped_key], dim=-1) # 1 x 4680 x 12 x 128
-            return roped_key
-
-        # @hidir: cache management
-        frame_seqlen = math.prod(grid_sizes[0][1:]).item() # 1560
-        current_start_frame = current_start // frame_seqlen 
-        num_new_tokens = q_rope.shape[1]
-        current_end = current_start + num_new_tokens
-        sink_tokens = self.sink_size * frame_seqlen
-        # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
-        kv_cache_size = 32760 # | 21 latent frames x 1560 frame_seqlen = 32760
-        # after 21 frames, we evict, and rotate the cached key from scratch. 
-        if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
-                (num_new_tokens + kv_cache["local_end_index"].item()) > kv_cache_size):
-            print('--------------------------------')
-            print('[EVICTING...]')
-            print('--------------------------------')
-            # Calculate the number of new tokens added in this step
-            # Shift existing cache content left to discard oldest tokens
-            # Clone the source slice to avoid overlapping memory error
-            num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
-            num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
-            kv_cache["compressed_kv"][:, sink_tokens:sink_tokens + num_rolled_tokens] = \
-                kv_cache["compressed_kv"][:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
-            # Insert the new keys/values at the end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - \
-                kv_cache["global_end_index"].item() - num_evicted_tokens
-            local_start_index = local_end_index - num_new_tokens
-            # --------------------------------------------------------------- # @hidir: caching must happen here!
-            kv_nope, k_rope = kv_projection_fn(x, kv_cache)
-            k_nope, v = get_k_v_from_kv_nope(kv_nope)
-            # --------------------------------------------------------------- #
-            grid_sizes_full = grid_sizes.clone()
-            grid_sizes_full[0][0] = 21
-            # --------------------------------------------------------------- #
-            roped_query = decoupled_rope_q_fn(q_nope, q_rope, grid_sizes, start_frame=18)
-            roped_key = decoupled_rope_k_fn(k_nope, k_rope, grid_sizes_full, start_frame=0)
-            # --------------------------------------------------------------- #
-
-        else: # first 21 frame happens here
-            # Assign new keys/values directly up to current_end
-            local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
-            local_start_index = local_end_index - num_new_tokens
-            # --------------------------------------------------------------- #
-            kv_nope, k_rope = kv_projection_fn(x, kv_cache)
-            k_nope, v = get_k_v_from_kv_nope(kv_nope)
-            # --------------------------------------------------------------- #
-            grid_sizes_full = grid_sizes.clone()
-            grid_sizes_full[0][0] = min(local_end_index // frame_seqlen, 21)
-            start_frame = current_start_frame if current_start_frame < 21 else 18
-            # --------------------------------------------------------------- #
-            roped_query = decoupled_rope_q_fn(q_nope, q_rope, grid_sizes, start_frame=start_frame)
-            roped_key = decoupled_rope_k_fn(k_nope, k_rope, grid_sizes_full, start_frame=0)
-            # --------------------------------------------------------------- #
-    
-        # attention
-        x = attention(
-            roped_query,
-            roped_key,
-            v
-        )
-        kv_cache["global_end_index"].fill_(current_end)
-        kv_cache["local_end_index"].fill_(local_end_index)
-
-        # output
-        x = x.flatten(2)
-        x = self.o(x)
-        return x
-
-# @hidir: for progressive training, we will modify here. 
-WAN_CAUSAL_SELF_ATTENTION_CLASSES = {
-    'self_attn': CausalWanSelfAttention,
-    'self_attn_mla': CausalWanSelfAttentionMLA,
-}
-
 class CausalWanAttentionBlock(nn.Module):
 
     def __init__(self,
-                 self_attn_type,
                  cross_attn_type,
                  dim,
                  ffn_dim,
@@ -479,13 +302,12 @@ class CausalWanAttentionBlock(nn.Module):
 
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
-        # @hidir: for progressive training, we will modify here. 
-        self.self_attn = WAN_CAUSAL_SELF_ATTENTION_CLASSES[self_attn_type](dim, 
-                                                                           num_heads,
-                                                                           local_attn_size,
-                                                                           sink_size, 
-                                                                           qk_norm, 
-                                                                           eps)
+        self.self_attn = CausalWanSelfAttention(dim, 
+                                                num_heads,
+                                                local_attn_size,
+                                                sink_size, 
+                                                qk_norm, 
+                                                eps)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -616,7 +438,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  sink_size=0,
                  qk_norm=True,
                  cross_attn_norm=True,
-                 mla_attn_layers=None, # @hidir: for progressive training, we will modify here. 
                  eps=1e-6):
         r"""
         Initialize the diffusion model backbone.
@@ -652,20 +473,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 Enable query/key normalization
             cross_attn_norm (`bool`, *optional*, defaults to False):
                 Enable cross-attention normalization
-            mla_attn_layers (`str`, *optional*, defaults to None):
-                Comma-separated string of layer indices to use MLA attention (e.g., '5,6' for layers 5 and 6)
             eps (`float`, *optional*, defaults to 1e-6):
                 Epsilon value for normalization layers
         """
 
         super().__init__()
-        # @hidir: for progressive training, we will modify here. 
-        if mla_attn_layers is not None:
-            self.mla_attn_layers = set(map(int, mla_attn_layers.split(',')))
-            causal_attn_layers = ['self_attn_mla' if i in self.mla_attn_layers else 'self_attn' for i in range(num_layers)]
-        else:
-            causal_attn_layers = ['self_attn'] * num_layers
-        
         assert model_type in ['t2v', 'i2v']
         self.model_type = model_type
 
@@ -696,12 +508,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.time_projection = nn.Sequential(
             nn.SiLU(), nn.Linear(dim, dim * 6))
 
-        # @hidir: for progressive training, we will modify here. 
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
-            CausalWanAttentionBlock(causal_attn_layers[i], cross_attn_type, dim, ffn_dim, num_heads,
+            CausalWanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
                                     local_attn_size, sink_size, qk_norm, cross_attn_norm, eps)
-            for i in range(num_layers)
+            for _ in range(num_layers)
         ])
 
         # head
@@ -709,18 +520,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
-        # Teacher freqs
         d = (dim // num_heads) 
         self.freqs = torch.cat([
-            rope_params(1024, d - 4 * (d // 6)),
-            rope_params(1024, 2 * (d // 6)),
-            rope_params(1024, 2 * (d // 6))
-        ],
-            dim=1)
-        # Student freqs  # @hidir: d was 128 in default (1536 / 12). 
-                         # However, since RoPE operates on half of the dimension in latent attention, we divide by 2.
-        d = d // 2
-        self.freqs_student = torch.cat([
             rope_params(1024, d - 4 * (d // 6)),
             rope_params(1024, 2 * (d // 6)),
             rope_params(1024, 2 * (d // 6))
@@ -995,9 +796,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
-        
-        if self.freqs_student.device != device:
-            self.freqs_student = self.freqs_student.to(device)
             
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
@@ -1061,7 +859,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
                         "cache_start": cache_start,
-                        "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
+                        "freqs": self.freqs,
                     }
                 )
                 x = torch.utils.checkpoint.checkpoint(
@@ -1076,7 +874,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "crossattn_cache": crossattn_cache[block_index],
                         "current_start": current_start,
                         "cache_start": cache_start,
-                        "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
+                        "freqs": self.freqs,
                     }
                 )
                 x = block(x, **kwargs)
@@ -1125,10 +923,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
-        
-        if self.freqs_student.device != device:
-            self.freqs_student = self.freqs_student.to(device)
-        
 
         # Construct blockwise causal attn mask
         if self.block_mask is None:
@@ -1232,7 +1026,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         for block_index, block in enumerate(self.blocks):
             kwargs.update(
                 {
-                    "freqs": self.freqs_student if block_index in self.mla_attn_layers else self.freqs,
+                    "freqs": self.freqs,
                 }
             )
             if torch.is_grad_enabled() and self.gradient_checkpointing: # @hidir: ODE Regression enters here

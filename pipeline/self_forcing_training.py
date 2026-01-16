@@ -16,7 +16,6 @@ class SelfForcingTrainingPipeline:
                  last_step_only: bool = False,
                  num_max_frames: int = 21,
                  context_noise: int = 0,
-                 mla_attn_layers: str = None,
                  **kwargs):
         super().__init__()
         self.scheduler = scheduler
@@ -30,7 +29,6 @@ class SelfForcingTrainingPipeline:
         self.frame_seq_length = 1560
         self.num_frame_per_block = num_frame_per_block
         self.context_noise = context_noise
-        self.mla_attn_layers = list(map(int, mla_attn_layers.split(',')))
         self.i2v = False
 
         self.kv_cache1 = None
@@ -227,45 +225,6 @@ class SelfForcingTrainingPipeline:
             kv_cache1.append({
                 "k": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "v": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
-                "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
-            })
-
-        self.kv_cache1 = kv_cache1  # always store the clean cache
-    
-    # @hidir: for progressive training, we need hybrid cache for kv cache. 
-    def _initialize_progressive_kv_cache(self, batch_size, dtype, device):
-        """
-        Initialize a Per-GPU KV cache for the Wan model.
-        """
-        kv_cache1 = []
-
-        for i in range(self.num_transformer_blocks):
-            if i in self.mla_attn_layers:
-                kv_cache1.append({
-                    "compressed_kv": torch.zeros([batch_size, self.kv_cache_size, 1088], dtype=dtype, device=device),
-                    "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                    "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
-                })
-            else:
-                kv_cache1.append({
-                "k": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
-                "v": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
-                "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
-            })
-
-        self.kv_cache1 = kv_cache1  # always store the clean cache
-    
-    def _initialize_compressed_kv_cache(self, batch_size, dtype, device):
-        """
-        Initialize a Per-GPU KV cache for the Wan model.
-        """
-        kv_cache1 = []
-
-        for _ in range(self.num_transformer_blocks):
-            kv_cache1.append({
-                "compressed_kv": torch.zeros([batch_size, self.kv_cache_size, 1088], dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
             })

@@ -93,21 +93,26 @@ class CausalInferencePipeline(torch.nn.Module):
         # Interactive Video Generation
         # ================================
         # Parse scene durations from prompts
-        scene_prompts, scene_block_counts = self._parse_scene_durations(text_prompts[0])
+        scene_prompts, scene_block_counts, scene_cut_flags = self._parse_scene_durations(text_prompts[0])
         conditional_dict_list = [self.text_encoder(text_prompts=[tp]) for tp in scene_prompts]
         
         # Calculate cumulative block indices for scene transitions
         # scene_block_boundaries[i] is the block index where scene i+1 starts
         scene_block_boundaries = []
+        scene_cut_boundaries = []  # Boundaries that should have scene cuts
         cumulative_blocks = 0
-        for block_count in scene_block_counts[:-1]:  # Exclude last scene
+        for i, block_count in enumerate(scene_block_counts[:-1]):  # Exclude last scene
             cumulative_blocks += block_count
             scene_block_boundaries.append(cumulative_blocks)
+            # scene_cut_flags[i] indicates if scene i+1 should start with a scene cut
+            if scene_cut_flags[i]:
+                scene_cut_boundaries.append(cumulative_blocks)
         
         print(f"Scene configuration:")
-        for i, (prompt, blocks) in enumerate(zip(scene_prompts, scene_block_counts)):
+        for i, (prompt, blocks, has_cut) in enumerate(zip(scene_prompts, scene_block_counts, scene_cut_flags)):
             duration_seconds = (blocks * 4 * self.num_frame_per_block) / self.default_fps
-            print(f"  Scene {i+1}: {blocks} blocks ({duration_seconds:.2f}s) - '{prompt[:50]}...'")
+            cut_indicator = " [SCENE CUT]" if has_cut else ""
+            print(f"  Scene {i+1}: {blocks} blocks ({duration_seconds:.2f}s){cut_indicator} - '{prompt[:50]}...'")
 
         if low_memory:
             gpu_memory_preservation = get_cuda_free_memory_gb(gpu) + 5
@@ -154,6 +159,7 @@ class CausalInferencePipeline(torch.nn.Module):
                     [0], dtype=torch.long, device=noise.device)
                 self.kv_cache1[block_index]["local_end_index"] = torch.tensor(
                     [0], dtype=torch.long, device=noise.device)
+                self.kv_cache1[block_index]["scene_cut"] = False
 
         # Step 2: Cache context feature
         current_start_frame = 0
@@ -218,6 +224,7 @@ class CausalInferencePipeline(torch.nn.Module):
             
             # Check if we need to flush KV cache (at scene boundaries)
             # Flush when we transition to a new scene (except at the start)
+            scene_cut_needed = current_block_index in scene_cut_boundaries
             if current_block_index in scene_block_boundaries:
                 n_layers = len(self.crossattn_cache)
                 for i in range(n_layers):
@@ -225,6 +232,13 @@ class CausalInferencePipeline(torch.nn.Module):
                     self.kv_cache1[i]['k'][:, 1560:4680] = self.kv_cache1[i]['k'][:, -3120:]
                     self.kv_cache1[i]['v'][:, 1560:4680] = self.kv_cache1[i]['v'][:, -3120:]
                     self.kv_cache1[i]['local_end_index'] = torch.tensor([4680], dtype=torch.long, device=noise.device)
+                    # Set scene_cut flag if this boundary requires a scene cut
+                    self.kv_cache1[i]['scene_cut'] = scene_cut_needed
+            else:
+                # Reset scene_cut flag (it should only be True for the first block of a scene with cut)
+                n_layers = len(self.crossattn_cache)
+                for i in range(n_layers):
+                    self.kv_cache1[i]['scene_cut'] = False
             # ---------------------------------------------------------------- #
             noisy_input = noise[
                 :, current_start_frame - num_input_frames:current_start_frame + current_num_frames - num_input_frames]
@@ -358,7 +372,8 @@ class CausalInferencePipeline(torch.nn.Module):
                 "k": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "v": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
+                "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                "scene_cut": False
             })
 
         self.kv_cache1 = kv_cache1  # always store the clean cache
@@ -377,31 +392,35 @@ class CausalInferencePipeline(torch.nn.Module):
             })
         self.crossattn_cache = crossattn_cache
 
-    def _parse_scene_durations(self, prompt: str) -> Tuple[List[str], List[int]]:
+    def _parse_scene_durations(self, prompt: str) -> Tuple[List[str], List[int], List[bool]]:
         """
-        Parse scene prompts with optional durations.
+        Parse scene prompts with optional durations and scene cut indicators.
         
-        Format: "prompt1[5s] | prompt2[15s] | prompt3"
+        Format: "prompt1[5s] | prompt2[15s#] | prompt3"
         - If duration is specified (e.g., [5s]), use that duration
         - If no duration is specified, use the default (14 blocks = 10.5 seconds)
+        - If # is present after duration (e.g., [15s#]), mark that scene transition for scene cut
         
         Returns:
-            Tuple of (prompt_texts, block_counts_per_scene)
+            Tuple of (prompt_texts, block_counts_per_scene, scene_cut_flags)
+            scene_cut_flags[i] is True if scene i+1 should start with a scene cut
         """
         # Split by | to get individual scene prompts
         scene_parts = [part.strip() for part in prompt.split('|')]
         prompt_texts = []
         block_counts = []
+        scene_cut_flags = []
         
         for scene_part in scene_parts:
-            # Check if duration is specified: [Xs] or [X.5s] etc.
-            duration_match = re.search(r'\[(\d+\.?\d*)\s*s\]', scene_part)
+            # Check if duration is specified: [Xs] or [X.5s] or [Xs#] etc.
+            duration_match = re.search(r'\[(\d+\.?\d*)\s*s#?\]', scene_part)
+            has_scene_cut = '#' in scene_part
             
             if duration_match:
                 # Extract duration in seconds
                 duration_seconds = float(duration_match.group(1))
-                # Remove the duration from the prompt text
-                prompt_text = re.sub(r'\[\d+\.?\d*\s*s\]', '', scene_part).strip()
+                # Remove the duration from the prompt text (including # if present)
+                prompt_text = re.sub(r'\[\d+\.?\d*\s*s#?\]', '', scene_part).strip()
                 
                 # Convert seconds to blocks
                 # Formula: blocks = (seconds * fps) / (4 * num_frame_per_block)
@@ -416,5 +435,6 @@ class CausalInferencePipeline(torch.nn.Module):
             
             prompt_texts.append(prompt_text)
             block_counts.append(blocks)
+            scene_cut_flags.append(has_scene_cut)
         
-        return prompt_texts, block_counts
+        return prompt_texts, block_counts, scene_cut_flags

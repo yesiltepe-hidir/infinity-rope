@@ -32,14 +32,101 @@ def sanitize_filename(text, max_length=100):
     # Truncate to max_length
     return sanitized[:max_length] if len(sanitized) > max_length else sanitized
 
+def parse_durations_from_prompt(prompt_text):
+    """
+    Parse durations from prompt in the format: "action 1"[5s] | "action 2"[15s] | ...
+    Returns total duration in seconds if all actions have durations, None otherwise.
+    """
+    # Split by ';' to get the part before subtitles
+    prompt_part = prompt_text.split(';')[0].strip()
+    
+    # Split by '|' to get individual actions
+    scene_parts = [part.strip() for part in prompt_part.split('|')]
+    
+    total_duration = 0.0
+    for scene_part in scene_parts:
+        # Look for duration pattern: [5s], [15s#], [10.5s], etc.
+        duration_match = re.search(r'\[(\d+\.?\d*)\s*s[#]?\]', scene_part)
+        if duration_match:
+            duration_seconds = float(duration_match.group(1))
+            total_duration += duration_seconds
+        else:
+            # If any action doesn't have a duration, return None
+            return None
+    
+    return total_duration if total_duration > 0 else None
+
+def calculate_latent_frames_from_duration(total_duration_seconds, fps, temporal_compression, 
+                                          num_frame_per_block, independent_first_frame, 
+                                          has_initial_latent):
+    """
+    Calculate the number of latent frames needed based on total duration.
+    
+    Args:
+        total_duration_seconds: Total duration in seconds
+        fps: Frames per second (16)
+        temporal_compression: Compression factor from latent to actual frames (4)
+        num_frame_per_block: Number of frames per block (must be multiple)
+        independent_first_frame: Whether first frame is independent (from config)
+        has_initial_latent: Whether initial_latent is provided (i2v case)
+    
+    Returns:
+        Number of latent frames for the noise tensor
+    """
+    import math
+    
+    # Calculate total output frames
+    total_output_frames = int(total_duration_seconds * fps)
+    
+    # Determine which pipeline constraint applies
+    # Pipeline checks: if not independent_first_frame or (independent_first_frame and initial_latent is not None):
+    #   -> num_frames % num_frame_per_block == 0
+    # else (independent_first_frame and initial_latent is None):
+    #   -> (num_frames - 1) % num_frame_per_block == 0
+    
+    if has_initial_latent:
+        # For image-to-video: first frame is provided as initial_latent
+        # Total output frames = 1 (from initial) + num_latent_frames * temporal_compression
+        # So: num_latent_frames = (total_output_frames - 1) / temporal_compression
+        base_latent_frames = (total_output_frames - 1) // temporal_compression
+        # Must be multiple of num_frame_per_block (because initial_latent is provided)
+        latent_frames = math.ceil(base_latent_frames / num_frame_per_block) * num_frame_per_block
+        # Ensure at least num_frame_per_block frames
+        latent_frames = max(latent_frames, num_frame_per_block)
+    else:
+        # For text-to-video
+        if independent_first_frame:
+            # Pipeline expects: (num_frames - 1) % num_frame_per_block == 0
+            # Total output frames = 1 (independent first) + num_latent_frames * temporal_compression
+            # So: num_latent_frames = (total_output_frames - 1) / temporal_compression
+            base_latent_frames = (total_output_frames - 1) // temporal_compression
+            # (latent_frames - 1) must be multiple of num_frame_per_block
+            # So latent_frames = 1 + k * num_frame_per_block for some k >= 0
+            if base_latent_frames == 0:
+                latent_frames = 1
+            else:
+                k = math.ceil(base_latent_frames / num_frame_per_block)
+                latent_frames = 1 + k * num_frame_per_block
+        else:
+            # Pipeline expects: num_frames % num_frame_per_block == 0
+            # Total output frames = num_latent_frames * temporal_compression
+            # So: num_latent_frames = total_output_frames / temporal_compression
+            base_latent_frames = total_output_frames // temporal_compression
+            # Must be multiple of num_frame_per_block
+            latent_frames = math.ceil(base_latent_frames / num_frame_per_block) * num_frame_per_block
+            # Ensure at least num_frame_per_block frames
+            latent_frames = max(latent_frames, num_frame_per_block)
+    
+    return latent_frames
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
 parser.add_argument("--checkpoint_path", type=str, help="Path to the checkpoint folder")
 parser.add_argument("--data_path", type=str, help="Path to the dataset")
 parser.add_argument("--extended_prompt_path", type=str, help="Path to the extended prompt")
 parser.add_argument("--output_folder", type=str, help="Output folder")
-parser.add_argument("--num_output_frames", type=int, default=21,
-                    help="Number of overlap frames between sliding windows")
+parser.add_argument("--num_output_frames", type=int, default=None,
+                    help="Number of output frames. Required if prompt does not contain duration information.")
 parser.add_argument("--i2v", action="store_true", help="Whether to perform I2V (or T2V by default)")
 parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA parameters")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
@@ -168,6 +255,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         print(prompt)
         prompts = [prompt] * args.num_samples
         extended_prompt = None  # i2v doesn't use extended prompts
+        prompt_for_duration = prompt
 
         # Process the image
         image = batch['image'].squeeze(0).unsqueeze(0).unsqueeze(2).to(device=device, dtype=torch.bfloat16)
@@ -175,10 +263,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         # Encode the input image as the first latent
         initial_latent = pipeline.vae.encode_to_latent(image).to(device=device, dtype=torch.bfloat16)
         initial_latent = initial_latent.repeat(args.num_samples, 1, 1, 1, 1)
-
-        sampled_noise = torch.randn(
-            [args.num_samples, args.num_output_frames - 1, 16, 60, 104], device=device, dtype=torch.bfloat16
-        )
+        has_initial_latent = True
     else:
         # For text-to-video, batch is just the text prompt
         prompt_and_subtitles = batch['prompts'][0]
@@ -188,12 +273,48 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
         if extended_prompt is not None:
             prompts = [extended_prompt] * args.num_samples
+            prompt_for_duration = extended_prompt
         else:
             prompts = [prompt] * args.num_samples
+            prompt_for_duration = prompt
         initial_latent = None
+        has_initial_latent = False
 
+    # Determine number of output frames based on duration or use provided value
+    total_duration = parse_durations_from_prompt(prompt_for_duration)
+    
+    if total_duration is not None:
+        # Mode 1: Calculate frames from duration
+        fps = 16.0
+        temporal_compression = 4
+        num_frame_per_block = getattr(pipeline, 'num_frame_per_block', getattr(config, 'num_frame_per_block', 1))
+        independent_first_frame = getattr(pipeline, 'independent_first_frame', getattr(config, 'independent_first_frame', False))
+        
+        num_latent_frames = calculate_latent_frames_from_duration(
+            total_duration, fps, temporal_compression, num_frame_per_block,
+            independent_first_frame, has_initial_latent
+        )
+        
+        print(f"Duration-based frame calculation: {total_duration}s -> {num_latent_frames} latent frames")
+        if args.num_output_frames is not None:
+            print(f"Warning: --num_output_frames ({args.num_output_frames}) is ignored when durations are specified in prompt")
+    else:
+        # Mode 2: Require --num_output_frames
+        if args.num_output_frames is None:
+            raise ValueError("--num_output_frames must be provided when prompt does not contain duration information")
+        num_latent_frames = args.num_output_frames
+        if has_initial_latent:
+            # For i2v, subtract 1 because first frame is provided
+            num_latent_frames = args.num_output_frames - 1
+
+    # Create noise tensor with calculated number of frames
+    if has_initial_latent:
         sampled_noise = torch.randn(
-            [args.num_samples, args.num_output_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
+            [args.num_samples, num_latent_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
+        )
+    else:
+        sampled_noise = torch.randn(
+            [args.num_samples, num_latent_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
         )
 
     # Generate 81 frames
@@ -214,30 +335,52 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     # Clear VAE cache
     pipeline.vae.model.clear_cache()
 
-    subtitles = subtitles.split('|')
-    
-    # Parse time durations from prompts for subtitle alignment
-    time_durations = None
+    # Parse time durations from actions (before ';') for subtitle alignment
     prompt_for_timing = extended_prompt if extended_prompt is not None else prompt
+    action_durations = None
     if prompt_for_timing:
-        # Parse durations from prompt (format: "text[5s] | text[10s]")
+        # Parse durations from prompt actions (format: "text[5s] | text[10s]")
         scene_parts = [part.strip() for part in prompt_for_timing.split('|')]
-        time_durations = []
+        action_durations = []
         for scene_part in scene_parts:
-            duration_match = re.search(r'\[(\d+\.?\d*)\s*s\]', scene_part)
+            # Look for duration pattern: [5s], [15s#], [10.5s], etc.
+            duration_match = re.search(r'\[(\d+\.?\d*)\s*s[#]?\]', scene_part)
             if duration_match:
                 duration_seconds = float(duration_match.group(1))
-                time_durations.append(duration_seconds)
+                action_durations.append(duration_seconds)
             else:
-                # If no duration specified, use equal division (will be handled by add_subtitles)
-                time_durations = None
+                # If any action doesn't have a duration, don't use durations
+                action_durations = None
                 break
-        
-        # Only use time_durations if we have the same number as subtitles
-        if time_durations is not None and len(time_durations) != len(subtitles):
-            time_durations = None
     
-    video = add_subtitles(video, subtitles, fps=16.0, time_durations=time_durations)
+    # Parse subtitles (after ';') and align with action durations
+    subtitle_list = []
+    if subtitles and subtitles.strip():
+        # Split subtitles by '|' and strip whitespace
+        subtitle_list = [s.strip() for s in subtitles.split('|')]
+    else:
+        # No subtitles provided, create empty list
+        subtitle_list = []
+    
+    # Align subtitles with action durations (one subtitle per action)
+    if action_durations is not None:
+        # Align subtitles with durations: one subtitle per action duration
+        # If fewer subtitles than actions, pad with empty strings
+        # If more subtitles than actions, truncate to match actions
+        if len(subtitle_list) < len(action_durations):
+            subtitle_list.extend([""] * (len(action_durations) - len(subtitle_list)))
+        elif len(subtitle_list) > len(action_durations):
+            subtitle_list = subtitle_list[:len(action_durations)]
+        
+        # Use durations for subtitle timing
+        time_durations = action_durations
+    else:
+        # No durations available, use None (will fall back to equal division)
+        time_durations = None
+    
+    # Only add subtitles if we have at least one non-empty subtitle
+    if subtitle_list and any(s.strip() for s in subtitle_list):
+        video = add_subtitles(video, subtitle_list, fps=16.0, time_durations=time_durations)
 
     # Save the video if the current prompt is not a dummy prompt
     if idx < num_prompts:
