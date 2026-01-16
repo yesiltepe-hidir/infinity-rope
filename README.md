@@ -58,7 +58,7 @@ bash inference.sh
 
 ## 🎬 Prompting Structure
 
-Infinity-RoPE utilizes a specific syntax to control temporal duration and scene transitions. The core format for a segment is:  
+Infinity-RoPE utilizes a specific syntax to control temporal duration and scene transitions. Examples are provided in prompts/infinity_rope_prompts.txt. The core format for an action segment is:  
 `"action_description[duration]"`
 
 ### 1. Syntax Overview
@@ -100,6 +100,7 @@ Combines scene cuts with synchronized text overlays.
 ---
 
 Note:
+* As KV Flush is effectively an index change operation, we found it quite useful to repeat the characteristics of environment and people in every action prompt. See examples in prompts/infinity_rope_prompts.txt
 * **Our model works better with long, detailed prompts** since it's trained with such prompts. We will integrate prompt extension into the codebase (similar to [Wan2.1](https://github.com/Wan-Video/Wan2.1/tree/main?tab=readme-ov-file#2-using-prompt-extention)) in the future. For now, it is recommended to use third-party LLMs (such as GPT-4o) to extend your prompt before providing to the model.
 * You may want to adjust FPS so it plays smoothly on your device.
 * The speed can be improved by enabling `torch.compile`, [TAEHV-VAE](https://github.com/madebyollin/taehv/), or using FP8 Linear layers, although the latter two options may sacrifice quality. It is recommended to use `torch.compile` if possible and enable TAEHV-VAE if further speedup is needed.
