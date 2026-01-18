@@ -250,8 +250,11 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     if args.i2v:
         # For image-to-video, batch contains image and caption
         prompt_and_subtitles = batch['prompts'][0]
+        # Ensure ';' exists for subtitle parsing (add if missing)
+        if ';' not in prompt_and_subtitles:
+            prompt_and_subtitles = prompt_and_subtitles + ';'
         prompt = prompt_and_subtitles.split(';')[0]  # Get caption from batch
-        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch
+        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch (empty string if no subtitles)
         print(prompt)
         prompts = [prompt] * args.num_samples
         extended_prompt = None  # i2v doesn't use extended prompts
@@ -267,8 +270,11 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     else:
         # For text-to-video, batch is just the text prompt
         prompt_and_subtitles = batch['prompts'][0]
+        # Ensure ';' exists for subtitle parsing (add if missing)
+        if ';' not in prompt_and_subtitles:
+            prompt_and_subtitles = prompt_and_subtitles + ';'
         prompt = prompt_and_subtitles.split(';')[0]  # Get caption from batch
-        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch
+        subtitles = prompt_and_subtitles.split(';')[1]  # Get subtitles from batch (empty string if no subtitles)
         print(prompt)
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
         if extended_prompt is not None:
