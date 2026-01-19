@@ -83,12 +83,12 @@ class SelfForcingTrainingPipeline:
         )
 
         # Step 1: Initialize KV cache to all zeros
-        # self._initialize_progressive_kv_cache( # @hidir: initialize hybrid kv cache
-        #     batch_size=batch_size, dtype=noise.dtype, device=noise.device
-        # )
-        # self._initialize_crossattn_cache(
-        #     batch_size=batch_size, dtype=noise.dtype, device=noise.device
-        # )
+        self._initialize_kv_cache(
+            batch_size=batch_size, dtype=noise.dtype, device=noise.device
+        )
+        self._initialize_crossattn_cache(
+            batch_size=batch_size, dtype=noise.dtype, device=noise.device
+        )
 
         # Step 2: Cache context feature
         current_start_frame = 0

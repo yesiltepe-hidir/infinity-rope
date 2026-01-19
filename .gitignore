@@ -64,6 +64,7 @@ datasets/
 
 # Large prompt files
 prompts/vidprom_filtered_extended.txt
+videos/
 
 # OS
 .DS_Store
