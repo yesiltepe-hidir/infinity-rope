@@ -24,8 +24,27 @@ flex_attention = torch.compile(
     flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
 
 
-def causal_rope_apply(x, grid_sizes, freqs, start_frame=0, scene_cut=False):
-    #@hidir: rolling rope
+def rope_cut(freqs, start_frame, f, transition_frames=3, transition_from=45):
+    """
+    Apply rope cut for scene transitions.
+    
+    Args:
+        freqs: Frequency tensor, shape [1024, C / num_heads / 2]
+        start_frame: Starting frame index (integer)
+        f: Number of frames (integer)
+        transition_frames: Latent block size (integer, default=3)
+        transition_from: Starting frame index for transition (integer, default=45)
+        
+    Returns:
+        temporal_freqs: Concatenated temporal frequencies
+    """
+    starting_group = freqs[0][start_frame:start_frame + f-transition_frames]
+    final_group = freqs[0][transition_from:transition_from + transition_frames]
+    temporal_freqs = torch.cat([starting_group, final_group], dim=0)
+    return temporal_freqs
+
+
+def block_relativistic_rope(x, grid_sizes, freqs, start_frame=0, scene_cut=False):
     n, c = x.size(2), x.size(3) // 2
 
     # split freqs
@@ -42,9 +61,7 @@ def causal_rope_apply(x, grid_sizes, freqs, start_frame=0, scene_cut=False):
             seq_len, n, -1, 2)) # @hidir: becomes 4680 x 12 x 32
         
         if scene_cut:
-            starting_group = freqs[0][start_frame:start_frame + f-3]
-            final_group = freqs[0][45:48]
-            temporal_freqs = torch.cat([starting_group, final_group], dim=0)
+            temporal_freqs = rope_cut(freqs, start_frame, f)
         else:
             temporal_freqs = freqs[0][start_frame:start_frame + f]
 
@@ -216,9 +233,6 @@ class CausalWanSelfAttention(nn.Module):
             # after 21 frames, we evict, and rotate the cached key from scratch. 
             if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
                     (num_new_tokens + kv_cache["local_end_index"].item()) > kv_cache_size):
-                # print('--------------------------------')
-                # print('[EVICTING...]')
-                # print('--------------------------------')
                 # Calculate the number of new tokens added in this step
                 # Shift existing cache content left to discard oldest tokens
                 # Clone the source slice to avoid overlapping memory error
@@ -235,16 +249,19 @@ class CausalWanSelfAttention(nn.Module):
                 kv_cache["k"][:, local_start_index:local_end_index] = k
                 kv_cache["v"][:, local_start_index:local_end_index] = v
                 k_for_rope = kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+                # ------------------------------------------------------------ #
                 grid_sizes_full = grid_sizes.clone()
                 grid_sizes_full[0][0] = max_attention_frames
-                start_frame = max_attention_frames-num_new_frames
+                # ------------------------------------------------------------ #
                 scene_cut = kv_cache.get("scene_cut", False)
-                roped_query = causal_rope_apply(
-                    q, grid_sizes, freqs, start_frame=start_frame, scene_cut=scene_cut).type_as(v)
-                roped_key = causal_rope_apply(
+                relative_start_frame = max_attention_frames-num_new_frames
+                roped_query = block_relativistic_rope(
+                    q, grid_sizes, freqs, start_frame=relative_start_frame, scene_cut=scene_cut).type_as(v)
+                # ------------------------------------------------------------ #
+                roped_key = block_relativistic_rope(
                     k_for_rope, grid_sizes_full, freqs, start_frame=0, scene_cut=scene_cut).type_as(v)          
                 roped_key[:, :frame_seqlen] = k_for_rope[:, :frame_seqlen]
-
+                # ------------------------------------------------------------ #
             else: # first 21 frame happens here
                 # Assign new keys/values directly up to current_end
                 local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
@@ -252,14 +269,18 @@ class CausalWanSelfAttention(nn.Module):
                 kv_cache["k"][:, local_start_index:local_end_index] = k
                 kv_cache["v"][:, local_start_index:local_end_index] = v
                 k_for_rope = kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+                # ------------------------------------------------------------ #
                 grid_sizes_full = grid_sizes.clone()
                 grid_sizes_full[0][0] = min(local_end_index // frame_seqlen, max_attention_frames)
-                start_frame = current_start_frame if current_start_frame < max_attention_frames else max_attention_frames - num_new_frames
+                # ------------------------------------------------------------ #
                 scene_cut = kv_cache.get("scene_cut", False)
-                roped_query = causal_rope_apply(
-                    q, grid_sizes, freqs, start_frame=start_frame, scene_cut=scene_cut).type_as(v)
-                roped_key = causal_rope_apply(
+                relative_start_frame = current_start_frame if current_start_frame < max_attention_frames else max_attention_frames - num_new_frames
+                roped_query = block_relativistic_rope(
+                    q, grid_sizes, freqs, start_frame=relative_start_frame, scene_cut=scene_cut).type_as(v)
+                # ------------------------------------------------------------ #
+                roped_key = block_relativistic_rope(
                         k_for_rope, grid_sizes_full, freqs, start_frame=0, scene_cut=scene_cut).type_as(v)
+                # ------------------------------------------------------------ #
                 if local_start_index == 0:
                     kv_cache["k"][:, :frame_seqlen] = roped_key[:, :frame_seqlen]
                 else:

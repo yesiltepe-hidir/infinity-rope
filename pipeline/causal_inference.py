@@ -210,10 +210,20 @@ class CausalInferencePipeline(torch.nn.Module):
         # all_num_frames = [self.num_frame_per_block * num_blocks]
         if self.independent_first_frame and initial_latent is None:
             all_num_frames = [1] + all_num_frames
+        # ------------------------------------------------------------ #
+        def kv_flush(scene_cut_needed, device):
+            """Flush KV cache at scene boundaries by rolling cache and resetting cross-attention."""
+            n_layers = len(self.crossattn_cache)
+            for i in range(n_layers):
+                self.crossattn_cache[i]['is_init'] = False
+                self.kv_cache1[i]['k'][:, 1560:4680] = self.kv_cache1[i]['k'][:, -3120:]
+                self.kv_cache1[i]['v'][:, 1560:4680] = self.kv_cache1[i]['v'][:, -3120:]
+                self.kv_cache1[i]['local_end_index'] = torch.tensor([4680], dtype=torch.long, device=device)
+                self.kv_cache1[i]['scene_cut'] = scene_cut_needed
+        # ------------------------------------------------------------ #
         for current_block_index, current_num_frames in enumerate(all_num_frames):
             if profile:
                 block_start.record()
-            # ---------------------------------------------------------------- #
             # Determine which scene this block belongs to
             scene_index = 0
             for boundary in scene_block_boundaries:
@@ -226,14 +236,7 @@ class CausalInferencePipeline(torch.nn.Module):
             # Flush when we transition to a new scene (except at the start)
             scene_cut_needed = current_block_index in scene_cut_boundaries
             if current_block_index in scene_block_boundaries:
-                n_layers = len(self.crossattn_cache)
-                for i in range(n_layers):
-                    self.crossattn_cache[i]['is_init'] = False
-                    self.kv_cache1[i]['k'][:, 1560:4680] = self.kv_cache1[i]['k'][:, -3120:]
-                    self.kv_cache1[i]['v'][:, 1560:4680] = self.kv_cache1[i]['v'][:, -3120:]
-                    self.kv_cache1[i]['local_end_index'] = torch.tensor([4680], dtype=torch.long, device=noise.device)
-                    # Set scene_cut flag if this boundary requires a scene cut
-                    self.kv_cache1[i]['scene_cut'] = scene_cut_needed
+                kv_flush(scene_cut_needed, noise.device)
             else:
                 # Reset scene_cut flag (it should only be True for the first block of a scene with cut)
                 n_layers = len(self.crossattn_cache)

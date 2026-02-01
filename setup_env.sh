@@ -5,8 +5,8 @@
 
 set -e  # Exit on any error
 
-ENV_NAME="latent-forcing"
-ENV_PATH="../latent-forcing-env"
+ENV_NAME="infinity_rope"
+ENV_PATH="../infinity_rope_env_new"
 PYTHON_VERSION="3.10"
 
 echo "Setting up latent-forcing environment..."
@@ -56,20 +56,15 @@ echo "Installing flash-attn..."
 pip install flash-attn --no-build-isolation
 
 # Install huggingface_hub with CLI
-echo "Installing huggingface_hub[cli]..."
-pip install -U "huggingface_hub[cli]"
+echo "Installing huggingface_hub..."
+pip install -U huggingface_hub
 
 # Download Wan-AI/Wan2.1-T2V-1.3B model
 echo "Downloading Wan-AI/Wan2.1-T2V-1.3B model..."
 huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B --local-dir-use-symlinks False --local-dir wan_models/Wan2.1-T2V-1.3B
 
 # Download self-forcing checkpoint with attention sink
-echo "Downloading gdhe17/Self-Forcing model..."
 huggingface-cli download SOTAMak1r/Infinite-Forcing --local-dir checkpoints/
-
-# Download gdhe17/Self-Forcing text prompts
-echo "Downloading gdhe17/Self-Forcing text prompts..."
-huggingface-cli download gdhe17/Self-Forcing vidprom_filtered_extended.txt --local-dir prompts
 
 # Run setup.py develop
 echo "Running setup.py develop..."
