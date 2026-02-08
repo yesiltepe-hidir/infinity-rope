@@ -50,12 +50,12 @@ https://github.com/user-attachments/assets/2f91630c-c536-4e25-995e-5167fd000c95
 <tr>
 <td>
 
-https://github.com/user-attachments/assets/VIDEO_PLACEHOLDER_1
+https://github.com/user-attachments/assets/f8d79710-ef35-431d-91af-336582b2d913
 
 </td>
 <td>
 
-https://github.com/user-attachments/assets/VIDEO_PLACEHOLDER_2
+https://github.com/user-attachments/assets/dd93fa11-2ee4-4bef-bbf6-5d8a771678b7
 
 </td>
 </tr>
