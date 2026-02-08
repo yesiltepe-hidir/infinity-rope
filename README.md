@@ -150,7 +150,7 @@ torchrun --nnodes=8 --nproc_per_node=8 --rdzv_id=5235 \
 Our training run uses 600 iterations and completes in under 2 hours using 64 H100 GPUs. By implementing gradient accumulation, it should be possible to reproduce the results in less than 16 hours using 8 H100 GPUs.
 
 ## Acknowledgements
-This codebase is built on top of the open-source implementation of [Self-Forcing](https://github.com/guandeh17/Self-Forcing). We also appreciate [Infinite-Forcing](https://github.com/SOTAMak1r/Infinite-Forcing) for providing an attention sink checkpoint.
+This codebase is built on top of the open-source implementation of [Self-Forcing](https://github.com/guandeh17/Self-Forcing). We also appreciate [Infinite-Forcing](https://github.com/SOTAMak1r/Infinite-Forcing) for providing an attention sink checkpoint, and [Causal Forcing](https://thu-ml.github.io/CausalForcing.github.io/) for providing high dynamic degree & imaging quality checkpoint. 
 
 ## Citation
 If you find this codebase useful for your research, please kindly cite our paper:
