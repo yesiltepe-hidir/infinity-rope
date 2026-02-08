@@ -36,6 +36,30 @@ https://github.com/user-attachments/assets/2f91630c-c536-4e25-995e-5167fd000c95
 
 
 
+## 🔥 News 
+* **[2026 Feb 08]** Thanks to @zhuhz22's recommendation, we adapted [Causal Forcing](https://thu-ml.github.io/CausalForcing.github.io/) checkpoints to Infinity-RoPE!
+* **[2026 Jan 16]** We released the code.
+* **[2026 Jan 11]** [LongLive](https://github.com/NVlabs/LongLive/blob/main/wan/modules/causal_model_infinity.py) adapted Infinity-RoPE for adapting their long video generator to infinite video generator!
+* **[2025 Nov 25]** We released the [paper](https://arxiv.org/pdf/2511.20649) and the [project page](https://infinity-rope.github.io/).
+
+<table>
+<tr>
+<th>Self-Forcing + ∞-RoPE</th>
+<th>Causal-Forcing + ∞-RoPE</th>
+</tr>
+<tr>
+<td>
+
+https://github.com/user-attachments/assets/VIDEO_PLACEHOLDER_1
+
+</td>
+<td>
+
+https://github.com/user-attachments/assets/VIDEO_PLACEHOLDER_2
+
+</td>
+</tr>
+</table>
 
 ## Requirements
 We tested this repo on the following setup:
