@@ -36,7 +36,8 @@ https://github.com/user-attachments/assets/2f91630c-c536-4e25-995e-5167fd000c95
 
 
 
-## 🔥 News 
+## 🔥 News
+* **[2026 Feb 08]** Infinity-RoPE has been accepted at CVPR 2026 🎉!
 * **[2026 Feb 08]** Thanks to @zhuhz22's recommendation, we adapted [Causal Forcing](https://thu-ml.github.io/CausalForcing.github.io/) checkpoints to Infinity-RoPE!
 * **[2026 Jan 16]** We released the code.
 * **[2026 Jan 11]** [LongLive](https://github.com/NVlabs/LongLive/blob/main/wan/modules/causal_model_infinity.py) adapted Infinity-RoPE for adapting their long video generator to infinite video generator!
