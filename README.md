@@ -1,6 +1,7 @@
 <p align="center">
-<h1 align="center">Infinity-RoPE</h1>
-<h3 align="center">Action-Controllable Infinite Video Generation Emerges From Autoregressive Self-Rollout</h3>
+<h1 align="center">🎞️ Infinity-RoPE</h1>
+<h2 align="center">Action-Controllable Infinite Video Generation Emerges From Autoregressive Self-Rollout</h2>
+<h3 align="center">CVPR 2026</h3>
 </p>
 <p align="center">
   <p align="center">
